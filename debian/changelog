@@ -1,3 +1,11 @@
+linglong (1.7.1-1) unstable; urgency=medium
+
+  * refactor: re-implement migrate
+  * fix(ll-cli): call updateAM failed
+  * fix: the prefix of install file was not removed
+
+ -- dengbo <dengbo@deepin.org>  Tue, 19 Nov 2024 18:30:11 +0800
+
 linglong (1.7.0-1) unstable; urgency=medium
 
   * release 1.7.0-1
