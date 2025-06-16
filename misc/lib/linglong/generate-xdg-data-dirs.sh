@@ -18,6 +18,9 @@ LINGLONG_EXPORT_PATH="@LINGLONG_EXPORT_PATH@"
 LINGLONG_DATA_DIR="${LINGLONG_ROOT}/entries/share"
 LINGLONG_DATA_DIR=${LINGLONG_DATA_DIR%/}
 
+# 如果 XDG_DATA_DIRS 为空，则先设置为 /usr/local/share:/usr/share
+: "${XDG_DATA_DIRS:=/usr/local/share:/usr/share}"
+
 # --- 辅助函数：安全地添加路径到 XDG_DATA_DIRS ---
 # 这个函数会检查路径是否已存在，如果不存在则添加。
 # 参数1: 要添加的路径 (path_to_add)
@@ -26,9 +29,6 @@ _add_path_to_xdg_data_dirs() {
     local path_to_add="${1%/}"   # 确保要添加的路径没有末尾斜杠
     local position="${2:-start}" # 默认添加到开头
 
-    # 确保 XDG_DATA_DIRS 变量已定义，如果未定义则初始化为空字符串
-    : "${XDG_DATA_DIRS:=}"
-
     # 检查路径是否已存在于 XDG_DATA_DIRS 中
     # 在 XDG_DATA_DIRS 两端加上冒号，以确保精确匹配（无论路径在开头、中间还是结尾）
     if [[ ":${XDG_DATA_DIRS}:" == *":${path_to_add}:"* ]]; then
@@ -36,11 +36,7 @@ _add_path_to_xdg_data_dirs() {
         return 0
     fi
 
-    # 如果路径不存在，则根据指定位置添加
-    if [[ -z "$XDG_DATA_DIRS" ]]; then
-        # 如果 XDG_DATA_DIRS 当前为空，直接赋值
-        XDG_DATA_DIRS="$path_to_add"
-    elif [[ "$position" == "start" ]]; then
+    if [[ "$position" == "start" ]]; then
         # 添加到开头
         XDG_DATA_DIRS="$path_to_add:$XDG_DATA_DIRS"
     elif [[ "$position" == "end" ]]; then
@@ -57,12 +53,7 @@ if [ "$LINGLONG_EXPORT_PATH" != "share" ]; then
     _add_path_to_xdg_data_dirs "$CUSTOM_DATA_DIR" "start"
 fi
 
-# 2. 处理 LINGLONG_DATA_DIR 的添加逻辑
-# 如果 XDG_DATA_DIRS 为空，则先设置为 /usr/local/share:/usr/share，
-# 然后再将 LINGLONG_DATA_DIR 添加到末尾。
-: "${XDG_DATA_DIRS:=/usr/local/share:/usr/share}"
-
-# 然后，将 LINGLONG_DATA_DIR 添加到 XDG_DATA_DIRS 的末尾（如果不存在）
+# 将 LINGLONG_DATA_DIR 添加到 XDG_DATA_DIRS 的末尾（如果不存在）
 _add_path_to_xdg_data_dirs "$LINGLONG_DATA_DIR" "end"
 
 # --- 清理辅助函数 ---
