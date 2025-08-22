@@ -1366,6 +1366,15 @@ OSTreeRepo::getCommitSize(const std::string &remote, const std::string &refStrin
             needed_objects++;
         }
     }
+    // 删除ref
+    if (!ostree_repo_set_ref_immediate(this->ostreeRepo.get(),
+                                       remote.c_str(),
+                                       refString.c_str(),
+                                       nullptr,
+                                       nullptr,
+                                       &gErr)) {
+        return LINGLONG_ERR("ostree_repo_set_ref_immediate", gErr);
+    }
     return std::vector<guint64>{ needed_archived, needed_unpacked, needed_objects };
 #else
     return LINGLONG_ERR("ostree_repo_pull_with_options is not supported");
@@ -2475,9 +2484,10 @@ OSTreeRepo::getLayerItem(const package::Reference &ref,
     if (module == "runtime") {
         module = "binary";
     }
-
+    // 优先从默认仓库查找
+    auto defaultRepo = getDefaultRepo(this->cfg);
     repoCacheQuery query{ .id = ref.id.toStdString(),
-                          .repo = std::nullopt,
+                          .repo = defaultRepo.alias.value_or(defaultRepo.name),
                           .channel = ref.channel.toStdString(),
                           .version = ref.version.toString().toStdString(),
                           .module = std::move(module),
@@ -2485,6 +2495,10 @@ OSTreeRepo::getLayerItem(const package::Reference &ref,
                           .deleted = std::nullopt };
     auto items = this->cache->queryLayerItem(query);
     auto count = items.size();
+    if (count == 1) {
+        return items.front();
+    }
+    // 同仓库不应该存在多个ref，异常情况需要错误
     if (count > 1) {
         std::for_each(items.begin(),
                       items.end(),
@@ -2495,30 +2509,40 @@ OSTreeRepo::getLayerItem(const package::Reference &ref,
                             << item.info.arch.front().c_str() << ":"
                             << item.info.packageInfoV2Module.c_str() << "]";
                       });
-        return LINGLONG_ERR("ambiguous ref has been detected, maybe underlying storage already "
-                            "broken.");
+        return LINGLONG_ERR(
+          "ambiguous ref has been detected, maybe underlying storage already broken.");
     }
 
-    if (count == 0) {
-        if (query.module != "binary") {
-            return LINGLONG_ERR("couldn't find layer item " % ref.toString() % "/"
-                                % query.module->c_str());
-        }
-
-        qDebug() << "fallback to runtime:" << query.to_string().c_str();
-        query.module = "runtime";
-        items = this->cache->queryLayerItem(query);
-        if (items.size() > 1) {
-            return LINGLONG_ERR("ambiguous ref has been detected, maybe underlying storage already "
-                                "broken.");
-        }
-
-        if (items.size() == 0) {
-            return LINGLONG_ERR(ref.toString() + " fallback to runtime still not found");
-        }
+    // 在默认仓库找不到，再扩大搜索范围
+    query.repo = std::nullopt;
+    items = this->cache->queryLayerItem(query);
+    count = items.size();
+    if (count == 1) {
+        return items.front();
+    }
+    // 多仓库可能会存在相同ref, 这种可以容忍
+    if (count > 1) {
+        qWarning() << "ambiguous ref has been detected, maybe underlying storage already broken.";
+        return items.front();
     }
 
-    return items.front();
+    // 搜不到binary, 则回退到runtime查找
+    if (query.module != "binary") {
+        return LINGLONG_ERR("couldn't find layer item " % ref.toString() % "/"
+                            % query.module->c_str());
+    }
+    qDebug() << "fallback to runtime:" << query.to_string().c_str();
+    query.module = "runtime";
+    items = this->cache->queryLayerItem(query);
+    count = items.size();
+    if (count == 1) {
+        return items.front();
+    }
+    if (count > 1) {
+        qWarning() << "ambiguous ref has been detected, maybe underlying storage already broken.";
+        return items.front();
+    }
+    return LINGLONG_ERR(ref.toString() + " fallback to runtime still not found");
 }
 
 auto OSTreeRepo::getLayerDir(const api::types::v1::RepositoryCacheLayersItem &layer) const noexcept
@@ -2878,7 +2902,8 @@ utils::error::Result<void> OSTreeRepo::mergeModules() const noexcept
                                         nullptr,
                                         &gErr)
                 == FALSE) {
-                return LINGLONG_ERR(QString("ostree_repo_checkout_at %1").arg(mergeTmp), gErr);
+                return LINGLONG_ERR(QString("ostree_repo_checkout_at %1").arg(layer.commit.c_str()),
+                                    gErr);
             }
         }
         // 将临时目录改名到正式目录，以binary模块的commit为文件名
