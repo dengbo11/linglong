@@ -4,8 +4,10 @@
 
 #include "run_context.h"
 
+#include "linglong/common/display.h"
 #include "linglong/extension/extension.h"
 #include "linglong/runtime/container_builder.h"
+#include "linglong/utils/log/log.h"
 
 namespace linglong::runtime {
 
@@ -74,8 +76,7 @@ RunContext::~RunContext()
 }
 
 utils::error::Result<void> RunContext::resolve(const linglong::package::Reference &runnable,
-                                               bool depsBinaryOnly,
-                                               const QStringList &appModules)
+                                               const ResolveOptions &options)
 {
     LINGLONG_TRACE("resolve RunContext from runnable " + runnable.toString());
 
@@ -95,10 +96,9 @@ utils::error::Result<void> RunContext::resolve(const linglong::package::Referenc
 
     if (info.kind == "app") {
         appLayer = RuntimeLayer(runnable, *this);
-
-        if (info.runtime) {
-            auto runtimeFuzzyRef =
-              package::FuzzyReference::parse(QString::fromStdString(*info.runtime));
+        auto runtime = options.runtimeRef.value_or(info.runtime.value_or(""));
+        if (!runtime.empty()) {
+            auto runtimeFuzzyRef = package::FuzzyReference::parse(QString::fromStdString(runtime));
             if (!runtimeFuzzyRef) {
                 return LINGLONG_ERR(runtimeFuzzyRef);
             }
@@ -121,7 +121,8 @@ utils::error::Result<void> RunContext::resolve(const linglong::package::Referenc
     }
 
     // all kinds of package has base
-    auto baseFuzzyRef = package::FuzzyReference::parse(QString::fromStdString(info.base));
+    auto baseRef = options.baseRef.value_or(info.base);
+    auto baseFuzzyRef = package::FuzzyReference::parse(QString::fromStdString(baseRef));
     if (!baseFuzzyRef) {
         return LINGLONG_ERR(baseFuzzyRef);
     }
@@ -146,7 +147,8 @@ utils::error::Result<void> RunContext::resolve(const linglong::package::Referenc
     resolveExtension(*baseLayer);
 
     // all reference are cleard , we can get actual layer directory now
-    return resolveLayer(depsBinaryOnly, appModules);
+    QStringList appModules = options.appModules.value_or(QStringList{});
+    return resolveLayer(options.depsBinaryOnly, appModules);
 }
 
 utils::error::Result<void> RunContext::resolve(const api::types::v1::BuilderProject &target,
@@ -402,10 +404,71 @@ utils::error::Result<void> RunContext::resolveExtension(RuntimeLayer &layer)
     return LINGLONG_OK;
 }
 
+void RunContext::detectDisplaySystem(generator::ContainerCfgBuilder &builder) noexcept
+{
+    LINGLONG_TRACE("detect display system");
+
+    while (true) {
+        auto *xOrgDisplayEnv = ::getenv("DISPLAY");
+        if (xOrgDisplayEnv == nullptr || xOrgDisplayEnv[0] == '\0') {
+            LogD("DISPLAY is not set, ignore it");
+            break;
+        }
+
+        auto xOrgDisplay = common::getXOrgDisplay(xOrgDisplayEnv);
+        if (!xOrgDisplay) {
+            LogW("failed to get XOrg display: {}, ignore it", xOrgDisplay.error());
+            break;
+        }
+
+        builder.bindXOrgSocket(xOrgDisplay.value());
+        builder.appendEnv("DISPLAY", xOrgDisplayEnv);
+        break;
+    }
+
+    while (true) {
+        auto *xOrgAuthFileEnv = ::getenv("XAUTHORITY");
+        if (xOrgAuthFileEnv == nullptr || xOrgAuthFileEnv[0] == '\0') {
+            LogD("XAUTHORITY is not set, ignore it");
+            break;
+        }
+
+        auto xOrgAuthFile = common::getXOrgAuthFile(xOrgAuthFileEnv);
+        if (!xOrgAuthFile) {
+            LogW("failed to get XOrg auth file: {}, ignore it", xOrgAuthFile.error());
+            break;
+        }
+
+        builder.bindXAuthFile(xOrgAuthFile.value());
+        builder.appendEnv("XAUTHORITY", xOrgAuthFileEnv);
+        break;
+    }
+
+    while (true) {
+        auto *waylandDisplayEnv = ::getenv("WAYLAND_DISPLAY");
+        if (waylandDisplayEnv == nullptr || waylandDisplayEnv[0] == '\0') {
+            LogD("WAYLAND_DISPLAY is not set, ignore it");
+            break;
+        }
+
+        auto waylandDisplay = common::getWaylandDisplay(waylandDisplayEnv);
+        if (!waylandDisplay) {
+            LogW("failed to get Wayland display: {}, ignore it", waylandDisplay.error());
+            break;
+        }
+
+        builder.bindWaylandSocket(waylandDisplay.value());
+        builder.appendEnv("WAYLAND_DISPLAY", waylandDisplayEnv);
+        break;
+    }
+}
+
 utils::error::Result<void>
 RunContext::fillContextCfg(linglong::generator::ContainerCfgBuilder &builder)
 {
     LINGLONG_TRACE("fill ContainerCfgBuilder with run context");
+
+    builder.setContainerId(containerID);
 
     if (!baseLayer) {
         return LINGLONG_ERR("run context doesn't resolved");
@@ -477,7 +540,38 @@ RunContext::fillContextCfg(linglong::generator::ContainerCfgBuilder &builder)
         builder.appendEnv(environment);
     }
 
+    detectDisplaySystem(builder);
+
+    for (auto ctx = securityContexts.begin(); ctx != securityContexts.end(); ++ctx) {
+        auto manager = getSecurityContextManager(ctx->first);
+        if (!manager) {
+            auto msg = "failed to get security context manager: " + fromType(ctx->first);
+            return LINGLONG_ERR(msg.c_str());
+        }
+
+        auto secCtx = manager->createSecurityContext(builder);
+        if (!secCtx) {
+            auto msg = "failed to create security context: " + fromType(ctx->first);
+            return LINGLONG_ERR(msg.c_str());
+        }
+        ctx->second = std::move(secCtx).value();
+
+        auto res = ctx->second->apply(builder);
+        if (!res) {
+            auto msg = "failed to apply security context: " + fromType(ctx->first);
+            ctx = securityContexts.erase(ctx);
+            return LINGLONG_ERR(msg.c_str(), res);
+        }
+    }
+
     return LINGLONG_OK;
+}
+
+void RunContext::enableSecurityContext(const std::vector<SecurityContextType> &ctxs)
+{
+    for (const auto &type : ctxs) {
+        securityContexts.try_emplace(type, nullptr);
+    }
 }
 
 utils::error::Result<void> RunContext::fillExtraAppMounts(generator::ContainerCfgBuilder &builder)
@@ -574,6 +668,11 @@ api::types::v1::ContainerProcessStateInfo RunContext::stateInfo()
 
     if (runtimeLayer) {
         state.runtime = runtimeLayer->getReference().toString().toStdString();
+    }
+
+    state.extensions = std::vector<std::string>{};
+    for (auto &ext : extensionLayers) {
+        state.extensions->push_back(ext.getReference().toString().toStdString());
     }
 
     return state;

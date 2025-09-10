@@ -11,6 +11,7 @@
 #include "linglong/api/types/v1/ExtensionDefine.hpp"
 #include "linglong/oci-cfg-generators/container_cfg_builder.h"
 #include "linglong/repo/ostree_repo.h"
+#include "linglong/runtime/security_context.h"
 #include "linglong/utils/error/error.h"
 
 #include <filesystem>
@@ -51,6 +52,14 @@ private:
     std::optional<ExtensionRuntimeLayerInfo> extensionOf;
 };
 
+struct ResolveOptions
+{
+    bool depsBinaryOnly{ false };
+    std::optional<QStringList> appModules;
+    std::optional<std::string> baseRef;
+    std::optional<std::string> runtimeRef;
+};
+
 class RunContext
 {
 public:
@@ -62,8 +71,8 @@ public:
     ~RunContext();
 
     utils::error::Result<void> resolve(const linglong::package::Reference &runnable,
-                                       bool depsBinaryOnly = false,
-                                       const QStringList &appModules = {});
+                                       const ResolveOptions &opts = ResolveOptions{});
+
     utils::error::Result<void> resolve(const api::types::v1::BuilderProject &target,
                                        std::filesystem::path buildOutput);
 
@@ -78,6 +87,8 @@ public:
 
     const std::optional<RuntimeLayer> &getRuntimeLayer() const { return runtimeLayer; }
 
+    void enableSecurityContext(const std::vector<SecurityContextType> &ctxs);
+
     const std::optional<RuntimeLayer> &getAppLayer() const { return appLayer; }
 
     utils::error::Result<std::filesystem::path> getBaseLayerPath() const;
@@ -91,9 +102,10 @@ private:
     utils::error::Result<void> resolveLayer(bool depsBinaryOnly, const QStringList &appModules);
     utils::error::Result<void> resolveExtension(RuntimeLayer &layer);
     utils::error::Result<void> fillExtraAppMounts(generator::ContainerCfgBuilder &builder);
+    void detectDisplaySystem(generator::ContainerCfgBuilder &builder) noexcept;
 
     repo::OSTreeRepo &repo;
-
+    std::unordered_map<SecurityContextType, std::unique_ptr<SecurityContext>> securityContexts;
     std::optional<RuntimeLayer> baseLayer;
     std::optional<RuntimeLayer> runtimeLayer;
     std::optional<RuntimeLayer> appLayer;
