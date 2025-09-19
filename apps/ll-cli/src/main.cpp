@@ -748,7 +748,7 @@ You can report bugs to the linyaps team under this project: https://github.com/O
                                                   pkgManConn,
                                                   QCoreApplication::instance());
     // if --no-dbus flag is set, start package manager in sudo mode
-    if (!noDBusFlag) {
+    if (*noDBusFlag) {
         if (getuid() != 0) {
             qCritical() << "--no-dbus should only be used by root user.";
             return -1;
@@ -804,7 +804,7 @@ You can report bugs to the linyaps team under this project: https://github.com/O
     }
 
     // check oci runtime
-    auto path = QStandardPaths::findExecutable(ociRuntimeCLI);
+    auto path = QStandardPaths::findExecutable(ociRuntimeCLI, { BINDIR });
     if (path.isEmpty()) {
         qCritical() << ociRuntimeCLI << "not found";
         return -1;

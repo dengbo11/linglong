@@ -34,6 +34,8 @@ pfl_add_library(
   src/linglong/utils/log/formatter.h
   src/linglong/utils/log/log.cpp
   src/linglong/utils/log/log.h
+  src/linglong/utils/namespace.cpp
+  src/linglong/utils/namespace.h
   src/linglong/utils/overlayfs.cpp
   src/linglong/utils/overlayfs.h
   src/linglong/utils/packageinfo_handler.cpp
@@ -51,6 +53,8 @@ pfl_add_library(
   src/linglong/utils/gkeyfile_wrapper.h
   src/linglong/utils/hooks.cpp
   src/linglong/utils/hooks.h
+  src/linglong/utils/bash_quote.h
+  src/linglong/utils/bash_command_helper.h
   COMPILE_FEATURES
   PUBLIC
   cxx_std_17
@@ -63,4 +67,5 @@ pfl_add_library(
   tl::expected
   ytj::ytj
   linglong::ocppi
-  linglong::api)
+  linglong::api
+  PkgConfig::cap)

@@ -126,7 +126,7 @@ public:
     ContainerCfgBuilder &
     bindDevNode(std::function<bool(const std::string &)> ifBind = nullptr) noexcept;
     ContainerCfgBuilder &bindCgroup() noexcept;
-    ContainerCfgBuilder &bindXDGRuntime(const std::filesystem::path &path) noexcept;
+    ContainerCfgBuilder &bindXDGRuntime() noexcept;
     ContainerCfgBuilder &bindRun() noexcept;
     ContainerCfgBuilder &bindTmp() noexcept;
     ContainerCfgBuilder &bindUserGroup() noexcept;
@@ -142,6 +142,10 @@ public:
     ContainerCfgBuilder &bindHostRoot() noexcept;
     ContainerCfgBuilder &bindHostStatics() noexcept;
     ContainerCfgBuilder &bindHome(std::filesystem::path hostHome) noexcept;
+
+    ContainerCfgBuilder &bindXOrgSocket(const std::filesystem::path &socket) noexcept;
+    ContainerCfgBuilder &bindXAuthFile(const std::filesystem::path &authFile) noexcept;
+    ContainerCfgBuilder &bindWaylandSocket(const std::filesystem::path &socket) noexcept;
 
     ContainerCfgBuilder &enablePrivateDir() noexcept;
     ContainerCfgBuilder &mapPrivate(std::string containerPath, bool isDir) noexcept;
@@ -179,17 +183,23 @@ public:
         return *this;
     }
 
+    ContainerCfgBuilder &disableUserNamespace() noexcept
+    {
+        disableUserNamespaceEnabled = true;
+        return *this;
+    }
+
     ContainerCfgBuilder &disablePatch() noexcept
     {
         applyPatchEnabled = false;
         return *this;
     }
 
-    void bindXOrgSocket(const std::filesystem::path &socket) noexcept;
-
-    void bindXAuthFile(const std::filesystem::path &authFile) noexcept;
-
-    void bindWaylandSocket(const std::filesystem::path &socket) noexcept;
+    ContainerCfgBuilder &setCapabilities(std::vector<std::string> caps) noexcept
+    {
+        capabilities = std::move(caps);
+        return *this;
+    }
 
     std::string ldConf(const std::string &triplet) const;
 
@@ -198,15 +208,6 @@ public:
     const ocppi::runtime::config::types::Config &getConfig() const { return config; }
 
     Error getError() { return error_; }
-
-    // TODO
-    // ContainerCfgBuilder& mountPermission() noexcept;
-
-    // utils::error::Result<void> useBasicConfig() noexcept;
-    // utils::error::Result<void> useHostRootFSConfig() noexcept;
-    // utils::error::Result<void> useHostStaticsConfig() noexcept;
-
-    // utils::error::Result<void> addEnv(std::map<std::string, std::string> env) noexcept;
 
 private:
     bool checkValid() noexcept;
@@ -224,7 +225,6 @@ private:
     bool buildMountLocalTime() noexcept;
     bool buildMountNetworkConf() noexcept;
     bool buildQuirkVolatile() noexcept;
-    // TODO: impl buildXDG()
     bool buildXDGRuntime() noexcept;
     bool buildEnv() noexcept;
     bool applyPatch() noexcept;
@@ -256,8 +256,7 @@ private:
     std::filesystem::path basePath;
     std::filesystem::path bundlePath;
     std::optional<std::filesystem::path> appCache;
-    std::filesystem::path hostXDGRuntimeMountPoint;
-    std::filesystem::path containerXDGRuntimeDir;
+    std::optional<std::filesystem::path> containerXDGRuntimeDir;
 
     bool runtimePathRo = true;
     bool appPathRo = true;
@@ -325,6 +324,7 @@ private:
     std::vector<ocppi::runtime::config::types::Mount> mounts;
 
     bool isolateNetWorkEnabled = false;
+    bool disableUserNamespaceEnabled = false;
     bool applyPatchEnabled = true;
     bool isolateTmp{ false };
 
@@ -334,6 +334,7 @@ private:
     std::optional<std::filesystem::path> xAuthFile;
 
     std::vector<std::string> maskedPaths;
+    std::optional<std::vector<std::string>> capabilities;
     ocppi::runtime::config::types::Config config;
     std::string containerId;
 

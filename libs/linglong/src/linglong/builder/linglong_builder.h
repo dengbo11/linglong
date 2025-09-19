@@ -8,6 +8,7 @@
 
 #include "linglong/api/types/v1/BuilderConfig.hpp"
 #include "linglong/api/types/v1/BuilderProject.hpp"
+#include "linglong/oci-cfg-generators/container_cfg_builder.h"
 #include "linglong/repo/ostree_repo.h"
 #include "linglong/runtime/container_builder.h"
 #include "linglong/runtime/run_context.h"
@@ -43,7 +44,9 @@ struct BuilderBuildOptions
 };
 
 utils::error::Result<void> cmdListApp(repo::OSTreeRepo &repo);
-utils::error::Result<void> cmdRemoveApp(repo::OSTreeRepo &repo, std::vector<std::string> refs);
+utils::error::Result<void> cmdRemoveApp(repo::OSTreeRepo &repo,
+                                        std::vector<std::string> refs,
+                                        bool prune);
 
 class Builder
 {
@@ -134,6 +137,9 @@ private:
     QDir buildOutput;
     std::string installPrefix;
     runtime::RunContext buildContext;
+
+    // capabilities for build stage
+    static std::vector<std::string> privilegeBuilderCaps;
 };
 
 } // namespace linglong::builder
