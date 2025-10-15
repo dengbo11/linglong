@@ -9,6 +9,7 @@
 #include "configure.h"
 #include "linglong/api/types/v1/Generators.hpp"
 #include "linglong/api/types/v1/OciConfigurationPatch.hpp"
+#include "linglong/common/dir.h"
 #include "linglong/common/display.h"
 #include "linglong/common/xdg.h"
 #include "ocppi/runtime/config/types/Generators.hpp"
@@ -254,7 +255,7 @@ bool ContainerCfgBuilder::buildXDGRuntime() noexcept
         return false;
     }
 
-    auto hostXDGRuntimeMountPoint = common::getAppXDGRuntimeDir(appId);
+    auto hostXDGRuntimeMountPoint = common::dir::getAppRuntimeDir(appId);
     std::error_code ec;
     std::filesystem::create_directories(hostXDGRuntimeMountPoint, ec);
     if (ec) {
@@ -655,7 +656,6 @@ bool ContainerCfgBuilder::prepare() noexcept
     config.hostname = "linglong";
 
     auto linux_ = ocppi::runtime::config::types::Linux{};
-    linux_.rootfsPropagation = RootfsPropagation::Slave;
     linux_.namespaces = std::vector<NamespaceReference>{
         NamespaceReference{ .type = NamespaceType::Pid },
         NamespaceReference{ .type = NamespaceType::Mount },
@@ -1130,7 +1130,7 @@ bool ContainerCfgBuilder::buildMountIPC() noexcept
     }();
 
     [this]() {
-        auto hostXDGRuntimeDir = common::getXDGRuntimeDir();
+        auto hostXDGRuntimeDir = common::xdg::getXDGRuntimeDir();
 
         bindIfExist(*ipcMount,
                     hostXDGRuntimeDir / "pulse",
@@ -1268,8 +1268,13 @@ bool ContainerCfgBuilder::buildMountLocalTime() noexcept
                                             .type = "bind" });
     }
 
-    bindIfExist(*localtimeMount, "/usr/share/zoneinfo");
-    bindIfExist(*localtimeMount, "/etc/timezone");
+    auto *tzdir_env = getenv("TZDIR");
+    if (tzdir_env != nullptr && tzdir_env[0] != '\0') {
+        bindIfExist(*localtimeMount, tzdir_env);
+    } else {
+        bindIfExist(*localtimeMount, "/usr/share/zoneinfo");
+        bindIfExist(*localtimeMount, "/etc/timezone");
+    }
 
     return true;
 }

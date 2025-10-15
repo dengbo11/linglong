@@ -10,11 +10,10 @@
 #include "linglong/api/types/helper.h"
 #include "linglong/api/types/v1/Generators.hpp"
 #include "linglong/api/types/v1/PackageInfoV2.hpp"
-#include "linglong/api/types/v1/PackageManager1JobInfo.hpp"
 #include "linglong/api/types/v1/PackageManager1PruneResult.hpp"
 #include "linglong/api/types/v1/Repo.hpp"
 #include "linglong/api/types/v1/State.hpp"
-#include "linglong/common/xdg.h"
+#include "linglong/common/dir.h"
 #include "linglong/extension/extension.h"
 #include "linglong/package/layer_file.h"
 #include "linglong/package/layer_packager.h"
@@ -24,8 +23,6 @@
 #include "linglong/repo/config.h"
 #include "linglong/repo/ostree_repo.h"
 #include "linglong/runtime/run_context.h"
-#include "linglong/utils/bash_quote.h"
-#include "linglong/utils/command/env.h"
 #include "linglong/utils/error/error.h"
 #include "linglong/utils/finally/finally.h"
 #include "linglong/utils/hooks.h"
@@ -42,7 +39,6 @@
 #include <QEventLoop>
 #include <QJsonArray>
 #include <QMetaObject>
-#include <QStandardPaths>
 #include <QTimer>
 #include <QUuid>
 
@@ -64,42 +60,24 @@ QVariantMap toDBusReply(const utils::error::Result<T> &x, std::string type = "di
     Q_ASSERT(!x.has_value());
 
     return utils::serialize::toQVariantMap(
-      api::types::v1::CommonResult{ .code = x.error().code(),                     // NOLINT
-                                    .message = x.error().message().toStdString(), // NOLINT
-                                    .type = std::move(type) });
-}
-
-QVariantMap toDBusReply(int code, const QString &message, std::string type = "display") noexcept
-{
-    return utils::serialize::toQVariantMap(
-      api::types::v1::CommonResult{ .code = code,                     // NOLINT
-                                    .message = message.toStdString(), // NOLINT
+      api::types::v1::CommonResult{ .code = x.error().code(),       // NOLINT
+                                    .message = x.error().message(), // NOLINT
                                     .type = std::move(type) });
 }
 
 QVariantMap toDBusReply(utils::error::ErrorCode code,
-                        const QString &message,
-                        std::string type = "display") noexcept
-{
-    return utils::serialize::toQVariantMap(
-      api::types::v1::CommonResult{ .code = static_cast<int>(code),   // NOLINT
-                                    .message = message.toStdString(), // NOLINT
-                                    .type = std::move(type) });
-}
-
-QVariantMap toDBusReply(utils::error::ErrorCode code,
-                        std::string message,
-                        std::string type = "display") noexcept
+                        const std::string &message,
+                        const std::string &type = "display") noexcept
 {
     return utils::serialize::toQVariantMap(
       api::types::v1::CommonResult{ .code = static_cast<int>(code), // NOLINT
-                                    .message = std::move(message),  // NOLINT
-                                    .type = std::move(type) });
+                                    .message = message,             // NOLINT
+                                    .type = type });
 }
 
 QVariantMap toDBusReply(utils::error::ErrorCode code,
                         const char *message,
-                        std::string type = "display") noexcept
+                        const std::string &type = "display") noexcept
 {
     return utils::serialize::toQVariantMap(
       api::types::v1::CommonResult{ .code = static_cast<int>(code), // NOLINT
@@ -116,21 +94,7 @@ bool isTaskDone(linglong::api::types::v1::SubState subState) noexcept
 utils::error::Result<package::FuzzyReference>
 fuzzyReferenceFromPackage(const api::types::v1::PackageManager1Package &pkg) noexcept
 {
-    std::optional<QString> channel;
-    if (pkg.channel) {
-        channel = QString::fromStdString(*pkg.channel);
-    }
-
-    std::optional<QString> version;
-    if (pkg.version) {
-        version = QString::fromStdString(*pkg.version);
-    }
-
-    auto fuzzyRef = package::FuzzyReference::create(channel,
-                                                    QString::fromStdString(pkg.id),
-                                                    version,
-                                                    std::nullopt);
-    return fuzzyRef;
+    return package::FuzzyReference::create(pkg.channel, pkg.id, pkg.version, std::nullopt);
 }
 } // namespace
 
@@ -179,13 +143,13 @@ PackageManager::~PackageManager()
 
 utils::error::Result<bool> PackageManager::isRefBusy(const package::Reference &ref) noexcept
 {
-    LINGLONG_TRACE(QString{ "check if ref[%1] is used by some apps" }.arg(ref.toString()));
+    LINGLONG_TRACE(fmt::format("check if ref[{}] is used by some apps", ref.toString()));
 
     auto ret = lockRepo();
     if (!ret) {
         return LINGLONG_ERR(
-          QStringLiteral("failed to lock repo, underlying data will not be removed:")
-          % ret.error().message());
+          QStringLiteral("failed to lock repo, underlying data will not be removed: %1")
+            .arg(ret.error().message().c_str()));
     }
 
     auto unlock = utils::finally::finally([this] {
@@ -197,12 +161,12 @@ utils::error::Result<bool> PackageManager::isRefBusy(const package::Reference &r
 
     auto running = getAllRunningContainers();
     if (!running) {
-        return LINGLONG_ERR(QStringLiteral("failed to get running containers:")
-                            % running.error().message());
+        return LINGLONG_ERR(QStringLiteral("failed to get running containers: %1")
+                              .arg(running.error().message().c_str()));
     }
     auto &runningRef = *running;
 
-    std::string refStr = ref.toString().toStdString();
+    std::string refStr = ref.toString();
     return std::find_if(runningRef.cbegin(),
                         runningRef.cend(),
                         [&refStr](const api::types::v1::ContainerProcessStateInfo &info) {
@@ -235,8 +199,8 @@ PackageManager::getAllRunningContainers() noexcept
     std::error_code ec;
     auto user_iterator = std::filesystem::directory_iterator{ "/run/linglong", ec };
     if (ec) {
-        return LINGLONG_ERR(QStringLiteral("failed to list /run/linglong: ")
-                            % ec.message().c_str());
+        return LINGLONG_ERR(
+          QStringLiteral("failed to list /run/linglong: %1").arg(ec.message().c_str()));
     }
 
     std::vector<api::types::v1::ContainerProcessStateInfo> result;
@@ -247,8 +211,9 @@ PackageManager::getAllRunningContainers() noexcept
 
         auto process_iterator = std::filesystem::directory_iterator{ entry.path(), ec };
         if (ec) {
-            return LINGLONG_ERR(QStringLiteral("failed to list ") % entry.path().c_str() % ": "
-                                % ec.message().c_str());
+            return LINGLONG_ERR(QStringLiteral("failed to list %1: %2")
+                                  .arg(entry.path().c_str())
+                                  .arg(ec.message().c_str()));
         }
 
         for (const auto &process_entry : process_iterator) {
@@ -259,8 +224,9 @@ PackageManager::getAllRunningContainers() noexcept
             auto pid = process_entry.path().filename().string();
             if (auto procDir = "/proc/" + pid; !std::filesystem::exists(procDir, ec)) {
                 if (ec) {
-                    return LINGLONG_ERR(QStringLiteral("failed to get state of ") % procDir.c_str()
-                                        % ": " % ec.message().c_str());
+                    return LINGLONG_ERR(QStringLiteral("failed to get state of %1: %2")
+                                          .arg(procDir.c_str())
+                                          .arg(ec.message().c_str()));
                 }
 
                 qInfo() << "ignore" << process_entry.path().c_str()
@@ -272,9 +238,9 @@ PackageManager::getAllRunningContainers() noexcept
               utils::serialize::LoadJSONFile<api::types::v1::ContainerProcessStateInfo>(
                 QString::fromStdString(process_entry.path().string()));
             if (!content) {
-                return LINGLONG_ERR(QStringLiteral("failed to load info from ")
-                                    % process_entry.path().c_str() % ": "
-                                    % content.error().message());
+                return LINGLONG_ERR(QStringLiteral("failed to load info from %1: %2")
+                                      .arg(process_entry.path().c_str())
+                                      .arg(content.error().message().c_str()));
             }
 
             result.emplace_back(std::move(content).value());
@@ -289,15 +255,16 @@ PackageManager::getAllRunningContainers() noexcept
     LINGLONG_TRACE("lock whole repo")
     lockFd = ::open(repoLockPath, O_RDWR | O_CREAT, 0644);
     if (lockFd == -1) {
-        return LINGLONG_ERR(QStringLiteral("failed to create lock file ") % repoLockPath % ": "
-                            % ::strerror(errno));
+        return LINGLONG_ERR(QStringLiteral("failed to create lock file %1: %2")
+                              .arg(repoLockPath)
+                              .arg(::strerror(errno)));
     }
 
     struct flock locker{ .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 0 };
 
     if (::fcntl(lockFd, F_SETLK, &locker) == -1) {
-        return LINGLONG_ERR(QStringLiteral("failed to lock ") % repoLockPath % ": "
-                            % ::strerror(errno));
+        return LINGLONG_ERR(
+          QStringLiteral("failed to lock %1: %2").arg(repoLockPath).arg(::strerror(errno)));
     }
 
     return LINGLONG_OK;
@@ -314,8 +281,8 @@ PackageManager::getAllRunningContainers() noexcept
     struct flock unlocker{ .l_type = F_UNLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 0 };
 
     if (::fcntl(lockFd, F_SETLK, &unlocker)) {
-        return LINGLONG_ERR(QStringLiteral("failed to unlock ") % repoLockPath % ": "
-                            % ::strerror(errno));
+        return LINGLONG_ERR(
+          QStringLiteral("failed to unlock %1: %2").arg(repoLockPath).arg(::strerror(errno)));
     }
 
     ::close(lockFd);
@@ -330,7 +297,7 @@ PackageManager::removeAfterInstall(const package::Reference &oldRef,
                                    const std::vector<std::string> &modules) noexcept
 {
     LINGLONG_TRACE("remove old reference after install")
-
+    LogI("remove after install {} to {}", oldRef.toString(), newRef.toString());
     auto needDelayRet = isRefBusy(oldRef);
     if (!needDelayRet) {
         return LINGLONG_ERR(needDelayRet);
@@ -341,16 +308,18 @@ PackageManager::removeAfterInstall(const package::Reference &oldRef,
         for (const auto &module : modules) {
             auto ret = this->repo.markDeleted(oldRef, true, module);
             if (!ret) {
-                return LINGLONG_ERR("Failed to mark old reference " % oldRef.toString() % "/"
-                                      % module.c_str() % " as deleted",
-                                    ret);
+                auto msg = fmt::format("Failed to mark old reference {} as deleted: {}",
+                                       oldRef.toString(),
+                                       module);
+                return LINGLONG_ERR(QString::fromStdString(msg), ret);
             }
 
             transaction.addRollBack([this, &oldRef, module]() noexcept {
                 auto ret = this->repo.markDeleted(oldRef, false, module);
                 if (!ret) {
-                    qWarning() << "Failed to rollback marking old reference " << oldRef.toString()
-                               << ":" << ret.error();
+                    LogW("Failed to rollback marking old reference {}: {}",
+                         oldRef.toString(),
+                         ret.error().message());
                 }
             });
         }
@@ -359,30 +328,46 @@ PackageManager::removeAfterInstall(const package::Reference &oldRef,
         return LINGLONG_OK;
     }
 
-    this->repo.unexportReference(oldRef);
+    // 更新时先导出新版本，再删除旧版本。
+    // 避免因软链接删除导致任务栏和桌面的图标丢失
+    transaction.addRollBack([this, &newRef]() noexcept {
+        this->repo.unexportReference(newRef);
+    });
+    LogI("export new reference", newRef.toString());
+    this->repo.exportReference(newRef);
+
+    // 保存layer位置，以便后续删除导出
     transaction.addRollBack([this, &oldRef]() noexcept {
         this->repo.exportReference(oldRef);
     });
+    LogI("unexport old reference {}", oldRef.toString());
+    this->repo.unexportReference(oldRef);
 
     for (const auto &module : modules) {
         if (module == "binary" || module == "runtime") {
+            LogI("remove old reference {} from cache", oldRef.toString());
             auto ret = this->removeCache(oldRef);
             if (!ret) {
                 qCritical() << ret.error().message();
             }
         }
 
+        LogI("remove old reference {} from ostree", oldRef.toString());
         auto ret = this->repo.remove(oldRef, module);
         if (!ret) {
-            return LINGLONG_ERR("Failed to remove old reference " % oldRef.toString(), ret);
+            auto msg = fmt::format("Failed to remove old reference {} from ostree: {}",
+                                   oldRef.toString(),
+                                   module);
+            return LINGLONG_ERR(QString::fromStdString(msg), ret);
         }
 
         transaction.addRollBack([this, &oldRef, module]() noexcept {
             auto tmp = PackageTask::createTemporaryTask();
             this->repo.pull(tmp, oldRef, module);
             if (tmp.state() != linglong::api::types::v1::State::Succeed) {
-                qWarning() << "failed to rollback remove old reference" << oldRef.toString() << ":"
-                           << tmp.message();
+                LogW("failed to rollback remove old reference {}: {}",
+                     oldRef.toString(),
+                     tmp.message());
             }
             if (module == "binary" || module == "runtime") {
                 auto ret = this->tryGenerateCache(oldRef);
@@ -397,9 +382,6 @@ PackageManager::removeAfterInstall(const package::Reference &oldRef,
     if (!mergeRet.has_value()) {
         qCritical() << "merge modules failed: " << mergeRet.error().message();
     }
-
-    this->repo.exportReference(newRef);
-
     transaction.commit();
     return LINGLONG_OK;
 }
@@ -435,7 +417,7 @@ void PackageManager::deferredUninstall() noexcept
         }
 
         auto [node, isNew] =
-          uninstalledLayers.try_emplace(ref->toString().toStdString(),
+          uninstalledLayers.try_emplace(ref->toString(),
                                         std::vector<api::types::v1::RepositoryCacheLayersItem>{});
         node->second.push_back(item);
     }
@@ -519,7 +501,7 @@ void PackageManager::setConfiguration(const QVariantMap &parameters) noexcept
 {
     auto cfg = utils::serialize::fromQVariantMap<api::types::v1::RepoConfigV2>(parameters);
     if (!cfg) {
-        sendErrorReply(QDBusError::InvalidArgs, cfg.error().message());
+        sendErrorReply(QDBusError::InvalidArgs, QString::fromStdString(cfg.error().message()));
         return;
     }
 
@@ -544,7 +526,7 @@ void PackageManager::setConfiguration(const QVariantMap &parameters) noexcept
 
     auto result = this->repo.setConfig(*cfg);
     if (!result) {
-        sendErrorReply(QDBusError::Failed, result.error().message());
+        sendErrorReply(QDBusError::Failed, result.error().message().c_str());
     }
 }
 
@@ -583,12 +565,12 @@ QVariantMap PackageManager::installFromLayer(const QDBusUnixFileDescriptor &fd,
     }
 
     if (*architectureRet != *currentArch) {
-        return toDBusReply(-1,
-                           "app arch:" + architectureRet->toString()
+        return toDBusReply(utils::error::ErrorCode::Failed,
+                           "app arch:" + architectureRet->toStdString()
                              + " not match host architecture");
     }
 
-    auto versionRet = package::Version::parse(QString::fromStdString(packageInfo.version));
+    auto versionRet = package::Version::parse(packageInfo.version);
     if (!versionRet) {
         return toDBusReply(versionRet);
     }
@@ -602,7 +584,7 @@ QVariantMap PackageManager::installFromLayer(const QDBusUnixFileDescriptor &fd,
     api::types::v1::InteractionMessageType msgType =
       api::types::v1::InteractionMessageType::Install;
 
-    additionalMessage.remoteRef = packageRef.toString().toStdString();
+    additionalMessage.remoteRef = packageRef.toString();
     // TODO: when install extra module, we should check the same version of main(binary/runtime)
     // module has been installed or not
 
@@ -619,27 +601,28 @@ QVariantMap PackageManager::installFromLayer(const QDBusUnixFileDescriptor &fd,
     if (localRef) {
         auto layerDir = this->repo.getLayerDir(*localRef, packageInfo.packageInfoV2Module);
         if (layerDir && layerDir->valid()) {
-            additionalMessage.localRef = localRef->toString().toStdString();
+            additionalMessage.localRef = localRef->toString();
         }
     }
 
     if (!additionalMessage.localRef.empty()) {
         if (packageRef.version == localRef->version) {
-            return toDBusReply(-1, localRef->toString() + " is already installed");
+            return toDBusReply(utils::error::ErrorCode::Failed,
+                               localRef->toString() + " is already installed");
         }
 
         if (packageRef.version > localRef->version) {
             msgType = api::types::v1::InteractionMessageType::Upgrade;
         } else if (!options.force) {
-            auto layerName = QString("%1_%2_%3_%4.layer")
-                               .arg(packageRef.id,
-                                    packageRef.version.toString(),
-                                    architectureRet->toString(),
-                                    packageInfo.packageInfoV2Module.c_str());
-            auto err = QString("The latest version has been installed. If you want to "
-                               "replace it, try using 'll-cli install %1 --force'")
-                         .arg(layerName);
-            return toDBusReply(-1, err);
+            auto layerName = fmt::format("{}_{}_{}_{}.layer",
+                                         packageRef.id,
+                                         packageRef.version.toString(),
+                                         architectureRet->toStdString(),
+                                         packageInfo.packageInfoV2Module.c_str());
+            auto err = fmt::format("The latest version has been installed. If you want to "
+                                   "replace it, try using 'll-cli install {} --force'",
+                                   layerName);
+            return toDBusReply(utils::error::ErrorCode::Failed, err);
         }
     }
 
@@ -758,9 +741,10 @@ QVariantMap PackageManager::installFromLayer(const QDBusUnixFileDescriptor &fd,
 
           auto ret = removeAfterInstall(*localRef, *newRef, std::vector{ module });
           if (!ret) {
-              qCritical() << "failed to remove old reference" << localRef->toString()
-                          << "after install" << packageRef.toString() << ":"
-                          << ret.error().message();
+              LogE("failed to remove old reference {} after install {}: {}",
+                   localRef->toString(),
+                   packageRef.toString(),
+                   ret.error().message());
           }
 
           ret = executePostInstallHooks(*newRef);
@@ -770,12 +754,12 @@ QVariantMap PackageManager::installFromLayer(const QDBusUnixFileDescriptor &fd,
           }
       };
 
-    auto refSpec =
-      QString{ "%1:%2/%3/%4/%5" }.arg("local",
-                                      packageRef.channel,
-                                      packageRef.id,
-                                      packageRef.arch.toString(),
-                                      QString::fromStdString(packageInfo.packageInfoV2Module));
+    auto refSpec = fmt::format("{}:{}/{}/{}/{}",
+                               "local",
+                               packageRef.channel,
+                               packageRef.id,
+                               packageRef.arch.toStdString(),
+                               QString::fromStdString(packageInfo.packageInfoV2Module));
     auto taskRet = tasks.addNewTask({ refSpec }, std::move(installer), connection());
     if (!taskRet) {
         return toDBusReply(taskRet);
@@ -795,7 +779,7 @@ QVariantMap PackageManager::installFromUAB(const QDBusUnixFileDescriptor &fd,
                                            const api::types::v1::CommonOptions &options) noexcept
 {
     if (!fd.isValid()) {
-        return toDBusReply(-1, "invalid file descriptor");
+        return toDBusReply(utils::error::ErrorCode::Failed, "invalid file descriptor");
     }
 
     std::unique_ptr<utils::InstallHookManager> installHookManager =
@@ -807,7 +791,8 @@ QVariantMap PackageManager::installFromUAB(const QDBusUnixFileDescriptor &fd,
 
     ret = installHookManager->executeInstallHooks(fd.fileDescriptor());
     if (!ret) {
-        return toDBusReply(-1, "uab package signature verification failed.");
+        return toDBusReply(utils::error::ErrorCode::Failed,
+                           "uab package signature verification failed.");
     }
 
     auto uabRet = package::UABFile::loadFromFile(fd.fileDescriptor());
@@ -821,7 +806,7 @@ QVariantMap PackageManager::installFromUAB(const QDBusUnixFileDescriptor &fd,
         return toDBusReply(verifyRet);
     }
     if (!*verifyRet) {
-        return toDBusReply(-1, "couldn't pass uab verification");
+        return toDBusReply(utils::error::ErrorCode::Failed, "couldn't pass uab verification");
     }
 
     auto realFile = uab->symLinkTarget();
@@ -839,7 +824,8 @@ QVariantMap PackageManager::installFromUAB(const QDBusUnixFileDescriptor &fd,
                                        return layer.info.kind == "app";
                                    });
     if (appLayerIt == layerInfos.cend()) {
-        return toDBusReply(-1, "couldn't find application layer in this uab");
+        return toDBusReply(utils::error::ErrorCode::Failed,
+                           "couldn't find application layer in this uab");
     }
 
     auto appLayer = *appLayerIt;
@@ -859,12 +845,12 @@ QVariantMap PackageManager::installFromUAB(const QDBusUnixFileDescriptor &fd,
     }
 
     if (*architectureRet != *currentArch) {
-        return toDBusReply(-1,
-                           "app arch:" + architectureRet->toString()
+        return toDBusReply(utils::error::ErrorCode::Failed,
+                           "app arch:" + architectureRet->toStdString()
                              + " not match host architecture");
     }
 
-    auto versionRet = package::Version::parse(QString::fromStdString(app->info.version));
+    auto versionRet = package::Version::parse(app->info.version);
     if (!versionRet) {
         return toDBusReply(versionRet);
     }
@@ -878,7 +864,7 @@ QVariantMap PackageManager::installFromUAB(const QDBusUnixFileDescriptor &fd,
     api::types::v1::PackageManager1RequestInteractionAdditionalMessage additionalMessage;
     api::types::v1::InteractionMessageType msgType =
       api::types::v1::InteractionMessageType::Install;
-    additionalMessage.remoteRef = appRef.toString().toStdString();
+    additionalMessage.remoteRef = appRef.toString();
 
     // Note: same as InstallRef, we should fuzzy the id instead of version
     auto fuzzyRef = package::FuzzyReference::parse(appRef.id);
@@ -893,26 +879,28 @@ QVariantMap PackageManager::installFromUAB(const QDBusUnixFileDescriptor &fd,
     if (localAppRef) {
         auto layerDir = this->repo.getLayerDir(*localAppRef, app->info.packageInfoV2Module);
         if (layerDir && layerDir->valid()) {
-            additionalMessage.localRef = localAppRef->toString().toStdString();
+            additionalMessage.localRef = localAppRef->toString();
         }
     }
 
     if (!additionalMessage.localRef.empty()) {
         if (appRef.version == localAppRef->version) {
-            return toDBusReply(-1, localAppRef->toString() + " is already installed");
+            return toDBusReply(utils::error::ErrorCode::Failed,
+                               localAppRef->toString() + " is already installed");
         }
 
         if (appRef.version > localAppRef->version) {
             msgType = api::types::v1::InteractionMessageType::Upgrade;
         } else if (!options.force) {
-            auto uabName = QString{ "%1_%2_%3_%4.uab" }.arg(appRef.id,
-                                                            architectureRet->toString(),
-                                                            appRef.version.toString(),
-                                                            app->info.packageInfoV2Module.c_str());
-            auto err = QString("The latest version has been installed. If you want to "
-                               "replace it, try using 'll-cli install %1 --force'")
-                         .arg(uabName);
-            return toDBusReply(-1, err);
+            auto uabName = fmt::format("{}_{}_{}_{}.uab",
+                                       appRef.id,
+                                       architectureRet->toStdString(),
+                                       appRef.version.toString(),
+                                       app->info.packageInfoV2Module.c_str());
+            auto err = fmt::format("The latest version has been installed. If you want to "
+                                   "replace it, try using 'll-cli install {} --force'",
+                                   std::move(uabName));
+            return toDBusReply(utils::error::ErrorCode::Failed, err);
         }
     }
 
@@ -999,15 +987,15 @@ QVariantMap PackageManager::installFromUAB(const QDBusUnixFileDescriptor &fd,
             auto layerDirPath = uabLayersDir / layer.info.id / layer.info.packageInfoV2Module;
             if (!std::filesystem::exists(layerDirPath, ec)) {
                 if (ec) {
-                    taskRef.updateState(linglong::api::types::v1::State::Failed,
-                                        QString{ "get status of" } % layerDirPath.c_str()
-                                          % "failed:" % ec.message().c_str());
+                    auto msg = fmt::format("get status of {} failed: {}",
+                                           layerDirPath.c_str(),
+                                           ec.message());
+                    taskRef.updateState(linglong::api::types::v1::State::Failed, msg);
                     return;
                 }
 
-                taskRef.updateState(linglong::api::types::v1::State::Failed,
-                                    QString{ "layer directory " } % layerDirPath.c_str()
-                                      % " doesn't exist");
+                auto msg = fmt::format("layer directory {} doesn't exist", layerDirPath.c_str());
+                taskRef.updateState(linglong::api::types::v1::State::Failed, msg);
                 return;
             }
 
@@ -1108,8 +1096,9 @@ QVariantMap PackageManager::installFromUAB(const QDBusUnixFileDescriptor &fd,
             this->repo.exportReference(newAppRef);
             auto result = this->tryGenerateCache(newAppRef);
             if (!result) {
-                taskRef.updateState(linglong::api::types::v1::State::Failed,
-                                    "Failed to generate some cache.\n" + result.error().message());
+                auto msg =
+                  fmt::format("Failed to generate some cache: {}", result.error().message());
+                taskRef.updateState(linglong::api::types::v1::State::Failed, msg);
                 return;
             }
         }
@@ -1124,12 +1113,12 @@ QVariantMap PackageManager::installFromUAB(const QDBusUnixFileDescriptor &fd,
         taskRef.updateState(linglong::api::types::v1::State::Succeed, "install uab successfully");
     };
 
-    auto refSpec =
-      QString{ "%1:%2/%3/%4/%5" }.arg("local",
-                                      appRef.channel,
-                                      appRef.id,
-                                      appRef.arch.toString(),
-                                      QString::fromStdString(app->info.packageInfoV2Module));
+    auto refSpec = fmt::format("{}:{}/{}/{}/{}",
+                               "local",
+                               appRef.channel,
+                               appRef.id,
+                               appRef.arch.toStdString(),
+                               QString::fromStdString(app->info.packageInfoV2Module));
     auto taskRet = tasks.addNewTask({ refSpec }, std::move(installer), connection());
     if (!taskRet) {
         return toDBusReply(taskRet);
@@ -1162,8 +1151,8 @@ auto PackageManager::InstallFromFile(const QDBusUnixFileDescriptor &fd,
                      { "uab", &PackageManager::installFromUAB } };
 
     if (!installers.contains(fileType)) {
-        return toDBusReply(QDBusError::NotSupported,
-                           QString{ "%1 is unsupported fileType" }.arg(fileType));
+        auto msg = fmt::format("{} is unsupported fileType", fileType.toStdString());
+        return toDBusReply(utils::error::ErrorCode::AppInstallUnsupportedFileFormat, msg);
     }
 
     return std::invoke(installers[fileType], this, fd, *opts);
@@ -1266,7 +1255,7 @@ auto PackageManager::Install(const QVariantMap &parameters) noexcept -> QVariant
     }
 
     // we need latest local reference
-    std::optional<QString> version = fuzzyRef->version;
+    auto originalVersion = fuzzyRef->version;
     fuzzyRef->version.reset();
     auto localRef = this->repo.clearReference(*fuzzyRef,
                                               {
@@ -1274,11 +1263,11 @@ auto PackageManager::Install(const QVariantMap &parameters) noexcept -> QVariant
                                               });
     // set version back
 
-    fuzzyRef->version = version;
+    fuzzyRef->version = originalVersion;
 
     api::types::v1::PackageManager1RequestInteractionAdditionalMessage additionalMessage;
     if (localRef) {
-        additionalMessage.localRef = localRef->toString().toStdString();
+        additionalMessage.localRef = localRef->toString();
     }
 
     auto refRet = [&paras, &fuzzyRef, &curModule, this] {
@@ -1304,12 +1293,13 @@ auto PackageManager::Install(const QVariantMap &parameters) noexcept -> QVariant
             return toDBusReply(utils::error::ErrorCode::AppInstallNotFoundFromRemote,
                                refRet.error().message());
         }
-        return toDBusReply(refRet.error().code(), refRet.error().message());
+
+        return toDBusReply(utils::error::ErrorCode::AppInstallFailed, refRet.error().message());
     }
 
     auto remoteRef = refRet->reference;
 
-    additionalMessage.remoteRef = remoteRef.toString().toStdString();
+    additionalMessage.remoteRef = remoteRef.toString();
 
     // 如果远程版本大于本地版本就升级，否则需要加--force降级，如果本地没有则直接安装，如果本地版本和远程版本相等就提示已安装
     auto msgType = api::types::v1::InteractionMessageType::Install;
@@ -1322,18 +1312,20 @@ auto PackageManager::Install(const QVariantMap &parameters) noexcept -> QVariant
         if (remoteRef.version > localRef->version) {
             msgType = api::types::v1::InteractionMessageType::Upgrade;
         } else if (!paras->options.force) {
-            auto err = QString("The latest version has been installed. If you want to "
-                               "replace it, try using 'll-cli install %1/%2 --force'")
-                         .arg(remoteRef.id, remoteRef.version.toString());
+            auto err = fmt::format("The latest version has been installed. If you want to "
+                                   "replace it, try using 'll-cli install {}/{} --force'",
+                                   remoteRef.id,
+                                   remoteRef.version.toString());
             return toDBusReply(utils::error::ErrorCode::AppInstallNeedDowngrade, err);
         }
     }
 
-    auto refSpec = QString{ "%1:%2/%3/%4/%5" }.arg(QString::fromStdString(refRet->repo.name),
-                                                   remoteRef.channel,
-                                                   remoteRef.id,
-                                                   remoteRef.arch.toString(),
-                                                   QString::fromStdString(curModule));
+    auto refSpec = fmt::format("{}:{}/{}/{}/{}",
+                               refRet->repo.name,
+                               remoteRef.channel,
+                               remoteRef.id,
+                               remoteRef.arch.toStdString(),
+                               curModule);
     // Note: do not capture any reference of variable which defined in this func.
     // it will be a dangling reference.
     auto installer = [this,
@@ -1392,7 +1384,7 @@ auto PackageManager::Install(const QVariantMap &parameters) noexcept -> QVariant
     return utils::serialize::toQVariantMap(api::types::v1::PackageManager1PackageTaskResult{
       .taskObjectPath = taskRef.taskObjectPath().toStdString(),
       .code = 0,
-      .message = (remoteRef.toString() + " is now installing").toStdString(),
+      .message = remoteRef.toString() + " is now installing",
     });
 }
 
@@ -1438,7 +1430,7 @@ void PackageManager::Install(PackageTask &taskContext,
         auto tmp = PackageTask::createTemporaryTask();
         UninstallRef(tmp, newRef, installModules.second);
         if (tmp.state() != linglong::api::types::v1::State::Succeed) {
-            qCritical() << "failed to rollback install " << newRef.toString();
+            LogE("failed to rollback install {}", newRef.toString());
         }
     });
     InstallRef(taskContext,
@@ -1469,10 +1461,13 @@ void PackageManager::Install(PackageTask &taskContext,
         if (oldRef) {
             auto ret = this->removeAfterInstall(*oldRef, newRef, modules);
             if (!ret) {
-                taskContext.reportError(LINGLONG_ERRV(
-                  "Failed to remove old reference " % oldRef->toString() % " after install "
-                    % newRef.toString() % ": " % ret.error().message(),
-                  utils::error::ErrorCode::AppInstallFailed));
+                auto msg = fmt::format("Failed to remove old reference {} after install {}: {}",
+                                       oldRef->toString(),
+                                       newRef.toString(),
+                                       ret.error().message());
+
+                taskContext.reportError(LINGLONG_ERRV(QString::fromStdString(msg),
+                                                      utils::error::ErrorCode::AppInstallFailed));
                 return;
             }
         } else {
@@ -1517,17 +1512,18 @@ void PackageManager::InstallRef(PackageTask &taskContext,
 
     if (ref.arch != *currentArch) {
         taskContext.updateState(linglong::api::types::v1::State::Failed,
-                                "app arch:" + ref.arch.toString() + " not match host architecture");
+                                "app arch:" + ref.arch.toStdString()
+                                  + " not match host architecture");
     }
 
     taskContext.updateSubState(linglong::api::types::v1::SubState::InstallApplication,
                                "Installing application " + ref.toString());
 
-    auto deletedList = this->repo.listLocalBy(
-      linglong::repo::repoCacheQuery{ .id = ref.id.toStdString(),
-                                      .channel = ref.channel.toStdString(),
-                                      .version = ref.version.toString().toStdString(),
-                                      .deleted = true });
+    auto deletedList =
+      this->repo.listLocalBy(linglong::repo::repoCacheQuery{ .id = ref.id,
+                                                             .channel = ref.channel,
+                                                             .version = ref.version.toString(),
+                                                             .deleted = true });
     if (!deletedList) {
         taskContext.updateState(linglong::api::types::v1::State::Failed,
                                 deletedList.error().message());
@@ -1560,8 +1556,9 @@ void PackageManager::InstallRef(PackageTask &taskContext,
 
         auto ret = this->repo.markDeleted(ref, false, deletedItem.info.packageInfoV2Module);
         if (!ret) {
-            qCritical() << "Failed to mark old package as deleted" << ref.toString() << ":"
-                        << ret.error().message();
+            LogE("Failed to mark old package as deleted {}: {}",
+                 ref.toString(),
+                 ret.error().message());
             taskContext.updateState(linglong::api::types::v1::State::Failed, "install failed");
             Q_ASSERT(false);
         }
@@ -1569,8 +1566,9 @@ void PackageManager::InstallRef(PackageTask &taskContext,
         t.addRollBack([this, &ref, module = deletedItem.info.packageInfoV2Module]() noexcept {
             auto ret = this->repo.markDeleted(ref, true, module);
             if (!ret) {
-                qWarning() << "failed to rollback marking deleted" << ref.toString() << ":"
-                           << ret.error().message();
+                LogE("failed to rollback marking deleted {}: {}",
+                     ref.toString(),
+                     ret.error().message());
             }
         });
 
@@ -1675,7 +1673,7 @@ auto PackageManager::Uninstall(const QVariantMap &parameters) noexcept -> QVaria
                 || item.info.packageInfoV2Module == "runtime") {
                 auto ref = package::Reference::fromPackageInfo(item.info);
                 if (ref) {
-                    items += (ref->toString().toStdString() + "\n");
+                    items += (ref->toString() + "\n");
                 } else {
                     items += "invalid ref\n";
                 }
@@ -1698,11 +1696,12 @@ auto PackageManager::Uninstall(const QVariantMap &parameters) noexcept -> QVaria
 
     auto curModule = paras->package.packageManager1PackageModule.value_or("binary");
     const auto defaultRepo = linglong::repo::getDefaultRepo(this->repo.getConfig());
-    auto refSpec = QString{ "%1:%2/%3/%4/%5" }.arg(QString::fromStdString(defaultRepo.name),
-                                                   mainRef->channel,
-                                                   mainRef->id,
-                                                   mainRef->arch.toString(),
-                                                   QString::fromStdString(curModule));
+    auto refSpec = fmt::format("{}:{}/{}/{}/{}",
+                               defaultRepo.name,
+                               mainRef->channel,
+                               mainRef->id,
+                               mainRef->arch.toStdString(),
+                               curModule);
 
     auto taskRet = tasks.addNewTask(
       { refSpec },
@@ -1724,7 +1723,7 @@ auto PackageManager::Uninstall(const QVariantMap &parameters) noexcept -> QVaria
     return utils::serialize::toQVariantMap(api::types::v1::PackageManager1PackageTaskResult{
       .taskObjectPath = taskRef.taskObjectPath().toStdString(),
       .code = 0,
-      .message = (refSpec + " is now uninstalling").toStdString(),
+      .message = refSpec + " is now uninstalling",
     });
 }
 
@@ -1758,8 +1757,7 @@ void PackageManager::UninstallRef(PackageTask &taskContext,
             auto tmpTask = PackageTask::createTemporaryTask();
             this->repo.pull(tmpTask, ref, module);
             if (tmpTask.state() != linglong::api::types::v1::State::Succeed) {
-                qCritical() << "failed to rollback module" << module.c_str() << "of ref"
-                            << ref.toString();
+                LogE("failed to rollback module {} of ref {}", module, ref.toString());
             }
             if (module == "binary" || module == "runtime") {
                 auto ret = this->tryGenerateCache(ref);
@@ -1828,7 +1826,7 @@ auto PackageManager::Update(const QVariantMap &parameters) noexcept -> QVariantM
     }
 
     std::unordered_map<package::Reference, package::ReferenceWithRepo> upgrades;
-    QStringList refSpecs;
+    std::vector<std::string> refSpecs;
     for (const auto &package : paras->packages) {
         auto installedAppFuzzyRef = fuzzyReferenceFromPackage(package);
         if (!installedAppFuzzyRef) {
@@ -1843,10 +1841,10 @@ auto PackageManager::Update(const QVariantMap &parameters) noexcept -> QVariantM
         if (!ref) {
             if (ref.error().code()
                 == static_cast<int>(utils::error::ErrorCode::AppNotFoundFromLocal)) {
-                return toDBusReply(utils::error::ErrorCode::AppUpgradeNotFound,
+                return toDBusReply(utils::error::ErrorCode::AppUpgradeLocalNotFound,
                                    installedAppFuzzyRef->toString() + " not installed.");
             }
-            return toDBusReply(ref.error().code(),
+            return toDBusReply(utils::error::ErrorCode::AppUpgradeFailed,
                                installedAppFuzzyRef->toString() + " not installed.");
         }
 
@@ -1858,24 +1856,28 @@ auto PackageManager::Update(const QVariantMap &parameters) noexcept -> QVariantM
 
         auto newRef = this->repo.latestRemoteReference(*installedAppFuzzyRef);
         if (!newRef) {
-            return toDBusReply(newRef.error().code(), newRef.error().message());
+            return toDBusReply(utils::error::ErrorCode::AppUpgradeRemoteNotFound,
+                               newRef.error().message());
         }
 
         if (newRef->reference.version <= ref->version) {
-            return toDBusReply(
-              utils::error::ErrorCode::AppUpgradeLatestInstalled,
-              QString("remote version is %1, the latest version %2 is already installed")
-                .arg(newRef->reference.version.toString(), ref->version.toString()));
+            auto msg =
+              fmt::format("remote version is {}, the latest version {} is already installed",
+                          newRef->reference.version.toString(),
+                          ref->version.toString());
+
+            return toDBusReply(utils::error::ErrorCode::AppUpgradeLatestInstalled, msg);
         }
 
         const auto &reference = *ref;
         // FIXME: use sha256 instead of refSpec
-        auto refSpec = QString{ "%1:%2/%3/%4/%5" }.arg(QString::fromStdString(newRef->repo.name),
-                                                       reference.channel,
-                                                       reference.id,
-                                                       reference.arch.toString(),
-                                                       "binary");
-        refSpecs.append(std::move(refSpec));
+        auto refSpec = fmt::format("{}:{}/{}/{}/{}",
+                                   newRef->repo.name,
+                                   reference.channel,
+                                   reference.id,
+                                   reference.arch.toStdString(),
+                                   "binary");
+        refSpecs.emplace_back(std::move(refSpec));
         upgrades.emplace(std::move(ref).value(), std::move(newRef).value());
     }
 
@@ -1887,8 +1889,9 @@ auto PackageManager::Update(const QVariantMap &parameters) noexcept -> QVariantM
                   return;
               }
 
-              qInfo() << "Before upgrade, old Ref: " << reference.toString()
-                      << " new Ref: " << newReference.reference.toString();
+              LogI("Before upgrade, old Ref: {} new Ref: {}",
+                   reference.toString(),
+                   newReference.reference.toString());
               this->Update(taskRef, reference, newReference);
           }
       },
@@ -1938,16 +1941,15 @@ void PackageManager::Update(PackageTask &taskContext,
 
     auto oldRefLayerItem = this->repo.getLayerItem(oldRef);
 
-    taskContext.updateState(
-      linglong::api::types::v1::State::PartCompleted,
-      QString{ "Upgrade %1 (from repo: %2) to %3 (from repo: %4) success" }.arg(
-        oldRef.toString(),
-        oldRefLayerItem ? oldRefLayerItem->repo.c_str() : "local",
-        newRef.toString(),
-        refWithRepo.repo.name.c_str()));
+    auto msg = fmt::format("Upgrade {} (from repo : {}) to {} (from repo : {}) success",
+                           oldRef.toString(),
+                           oldRefLayerItem ? oldRefLayerItem->repo : "local",
+                           newRef.toString(),
+                           refWithRepo.repo.name);
+    taskContext.updateState(linglong::api::types::v1::State::PartCompleted, msg);
 
     auto ret = this->isRefBusy(oldRef);
-    if (ret.has_value() && *ret == true) {
+    if (ret.has_value() && *ret) {
         // use setMessage and setSubState directly will not trigger signal
         taskContext.setSubState(linglong::api::types::v1::SubState::PackageManagerDone),
           taskContext.setMessage(
@@ -1957,16 +1959,16 @@ void PackageManager::Update(PackageTask &taskContext,
     // we don't need to set task state to failed after install newer version successfully
     auto newItem = this->repo.getLayerItem(newRef);
     if (!newItem) {
-        qCritical() << "get layer item of ref" << newRef.toString()
-                    << "failed:" << newItem.error().message();
+        LogE("get layer item of ref {} failed: {}", newRef.toString(), newItem.error().message());
         return;
     }
 
     if (newItem->info.kind == "app") {
         auto ret = removeAfterInstall(oldRef, newRef, modules);
         if (!ret) {
-            qCritical() << "remove after install of ref" << oldRef.toString()
-                        << "failed:" << ret.error().message();
+            LogE("remove after install of ref {} failed: {}",
+                 oldRef.toString(),
+                 ret.error().message());
             return;
         }
 
@@ -2025,7 +2027,7 @@ auto PackageManager::Search(const QVariantMap &parameters) noexcept -> QVariantM
                 qWarning() << "list remote failed: " << pkgInfosRet.error().message();
                 Q_EMIT this->SearchFinished(
                   jobID,
-                  toDBusReply(pkgInfosRet.error().code(), pkgInfosRet.error().message()));
+                  toDBusReply(utils::error::ErrorCode::Failed, pkgInfosRet.error().message()));
                 return;
             }
 
@@ -2066,11 +2068,11 @@ void PackageManager::pullDependency(PackageTask &taskContext,
         return;
     }
 
-    LINGLONG_TRACE("pull dependencies of " + QString::fromStdString(info.id));
+    LINGLONG_TRACE("pull dependencies of " + info.id);
 
     utils::Transaction transaction;
     if (info.runtime) {
-        auto fuzzyRuntime = package::FuzzyReference::parse(QString::fromStdString(*info.runtime));
+        auto fuzzyRuntime = package::FuzzyReference::parse(*info.runtime);
         if (!fuzzyRuntime) {
             taskContext.updateState(linglong::api::types::v1::State::Failed,
                                     LINGLONG_ERRV(fuzzyRuntime).message());
@@ -2140,7 +2142,7 @@ void PackageManager::pullDependency(PackageTask &taskContext,
         }
     }
 
-    auto fuzzyBase = package::FuzzyReference::parse(QString::fromStdString(info.base));
+    auto fuzzyBase = package::FuzzyReference::parse(info.base);
     if (!fuzzyBase) {
         taskContext.updateState(linglong::api::types::v1::State::Failed,
                                 LINGLONG_ERRV(fuzzyBase).message());
@@ -2255,11 +2257,10 @@ PackageManager::Prune(std::vector<api::types::v1::PackageInfoV2> &removed) noexc
                     continue;
                 }
 
-                auto fuzzyRef =
-                  package::FuzzyReference::create(QString::fromStdString(info.channel),
-                                                  QString::fromStdString(name),
-                                                  QString::fromStdString(extension.version),
-                                                  std::nullopt);
+                auto fuzzyRef = package::FuzzyReference::create(info.channel,
+                                                                name,
+                                                                extension.version,
+                                                                std::nullopt);
                 auto ref = repo.clearReference(
                   *fuzzyRef,
                   { .forceRemote = false, .fallbackToRemote = false, .semanticMatching = true });
@@ -2295,8 +2296,7 @@ PackageManager::Prune(std::vector<api::types::v1::PackageInfoV2> &removed) noexc
         }
 
         if (info.runtime) {
-            auto runtimeFuzzyRef =
-              package::FuzzyReference::parse(QString::fromStdString(info.runtime.value()));
+            auto runtimeFuzzyRef = package::FuzzyReference::parse(info.runtime.value());
             if (!runtimeFuzzyRef) {
                 qWarning() << runtimeFuzzyRef.error().message();
                 continue;
@@ -2316,7 +2316,7 @@ PackageManager::Prune(std::vector<api::types::v1::PackageInfoV2> &removed) noexc
             scanExtensionsByRef(*runtimeRef);
         }
 
-        auto baseFuzzyRef = package::FuzzyReference::parse(QString::fromStdString(info.base));
+        auto baseFuzzyRef = package::FuzzyReference::parse(info.base);
         if (!baseFuzzyRef) {
             qWarning() << baseFuzzyRef.error().message();
             continue;
@@ -2435,7 +2435,7 @@ utils::error::Result<void> PackageManager::generateCache(const package::Referenc
         return LINGLONG_ERR(res);
     }
 
-    cfgBuilder.setAppId(ref.id.toStdString())
+    cfgBuilder.setAppId(ref.id)
       .setAppCache(appCache, false)
       .addUIdMapping(uid, uid, 1)
       .addGIdMapping(gid, gid, 1)
@@ -2467,7 +2467,7 @@ utils::error::Result<void> PackageManager::generateCache(const package::Referenc
         if (!ofs.is_open()) {
             return LINGLONG_ERR("create ld config in bundle directory");
         }
-        ofs << cfgBuilder.ldConf(ref.arch.getTriplet().toStdString());
+        ofs << cfgBuilder.ldConf(ref.arch.getTriplet());
     }
 
     if (!cfgBuilder.build()) {
@@ -2505,7 +2505,7 @@ utils::error::Result<void> PackageManager::generateCache(const package::Referenc
 #endif
 
     process.args = std::move(ldGenerateCmd);
-    auto XDGRuntimeDir = common::getAppXDGRuntimeDir(ref.id.toStdString());
+    auto XDGRuntimeDir = common::dir::getAppRuntimeDir(ref.id);
     auto containerStateRoot = XDGRuntimeDir / "ll-box";
 
     ocppi::runtime::RunOption opt;
@@ -2574,12 +2574,11 @@ auto PackageManager::GenerateCache(const QString &reference) noexcept -> QVarian
     auto ref = *refRet;
     auto jobID = QUuid::createUuid().toString();
     m_generator_queue.runTask([this, jobID, ref]() {
-        qInfo() << "Generate cache for:" << ref.toString();
+        LogI("Generate cache for {}", ref.toString());
 
         auto ret = this->generateCache(ref);
         if (!ret) {
-            qCritical() << "failed to generate cache for:" << ref.toString();
-            qCritical() << ret.error().message();
+            LogE("failed to generate cache for {}: {}", ref.toString(), ret.error().message());
             Q_EMIT this->GenerateCacheFinished(jobID, false);
             return;
         }
@@ -2614,7 +2613,7 @@ PackageManager::executePostInstallHooks(const package::Reference &ref) noexcept
 
     auto appPath = layerDir->absolutePath();
 
-    ret = installHookManager->executePostInstallHooks(ref.id.toStdString(), appPath.toStdString());
+    ret = installHookManager->executePostInstallHooks(ref.id, appPath.toStdString());
     if (!ret) {
         return LINGLONG_ERR(ret);
     }
@@ -2634,7 +2633,7 @@ PackageManager::executePostUninstallHooks(const package::Reference &ref) noexcep
         return LINGLONG_ERR(ret);
     }
 
-    ret = installHookManager->executePostUninstallHooks(ref.id.toStdString());
+    ret = installHookManager->executePostUninstallHooks(ref.id);
     if (!ret) {
         return LINGLONG_ERR(ret);
     }

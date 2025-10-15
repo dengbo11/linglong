@@ -30,8 +30,9 @@ public:
     using ExtensionRuntimeLayerInfo =
       std::pair<api::types::v1::ExtensionDefine, std::reference_wrapper<RuntimeLayer>>;
 
-    utils::error::Result<void> resolveLayer(
-      const QStringList &modules = {}, const std::optional<std::string> &subRef = std::nullopt);
+    utils::error::Result<void>
+    resolveLayer(const std::vector<std::string> &modules = {},
+                 const std::optional<std::string> &subRef = std::nullopt);
 
     utils::error::Result<api::types::v1::RepositoryCacheLayersItem> getCachedItem();
 
@@ -55,9 +56,10 @@ private:
 struct ResolveOptions
 {
     bool depsBinaryOnly{ false };
-    std::optional<QStringList> appModules;
+    std::optional<std::vector<std::string>> appModules;
     std::optional<std::string> baseRef;
     std::optional<std::string> runtimeRef;
+    std::optional<std::vector<std::string>> extensionRefs;
 };
 
 class RunContext
@@ -74,7 +76,7 @@ public:
                                        const ResolveOptions &opts = ResolveOptions{});
 
     utils::error::Result<void> resolve(const api::types::v1::BuilderProject &target,
-                                       std::filesystem::path buildOutput);
+                                       const std::filesystem::path &buildOutput);
 
     utils::error::Result<void> fillContextCfg(generator::ContainerCfgBuilder &builder);
     api::types::v1::ContainerProcessStateInfo stateInfo();
@@ -99,10 +101,17 @@ public:
     bool hasRuntime() const { return !!runtimeLayer; }
 
 private:
-    utils::error::Result<void> resolveLayer(bool depsBinaryOnly, const QStringList &appModules);
+    utils::error::Result<void> resolveLayer(bool depsBinaryOnly,
+                                            const std::vector<std::string> &appModules);
     utils::error::Result<void> resolveExtension(RuntimeLayer &layer);
+    utils::error::Result<void>
+    resolveExtension(const std::vector<api::types::v1::ExtensionDefine> &extDefs,
+                     std::optional<std::string> channel = std::nullopt,
+                     bool skipOnNotFound = false);
     utils::error::Result<void> fillExtraAppMounts(generator::ContainerCfgBuilder &builder);
     void detectDisplaySystem(generator::ContainerCfgBuilder &builder) noexcept;
+    utils::error::Result<std::vector<api::types::v1::ExtensionDefine>>
+    makeManualExtensionDefine(const std::vector<std::string> &refs);
 
     repo::OSTreeRepo &repo;
     std::unordered_map<SecurityContextType, std::unique_ptr<SecurityContext>> securityContexts;

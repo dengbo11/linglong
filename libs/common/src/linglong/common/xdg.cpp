@@ -6,7 +6,7 @@
 
 #include <unistd.h>
 
-namespace linglong::common {
+namespace linglong::common::xdg {
 
 std::filesystem::path getXDGRuntimeDir() noexcept
 {
@@ -16,12 +16,8 @@ std::filesystem::path getXDGRuntimeDir() noexcept
     }
 
     // fallback to default
-    return std::filesystem::path{ "/tmp" } / "linglong" / std::to_string(::getuid());
+    // /tmp/linglong-runtime-$UID
+    return std::filesystem::path{ "/tmp" } / ("linglong-runtime-" + std::to_string(::getuid()));
 }
 
-std::filesystem::path getAppXDGRuntimeDir(const std::string &appId) noexcept
-{
-    return getXDGRuntimeDir() / "linglong/apps" / appId;
-}
-
-} // namespace linglong::common
+} // namespace linglong::common::xdg

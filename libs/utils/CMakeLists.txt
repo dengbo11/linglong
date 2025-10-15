@@ -68,4 +68,5 @@ pfl_add_library(
   ytj::ytj
   linglong::ocppi
   linglong::api
+  linglong::common
   PkgConfig::cap)

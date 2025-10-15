@@ -4,7 +4,7 @@
 
 #include "linglong/runtime/wayland_security_ctx.h"
 
-#include "linglong/common/xdg.h"
+#include "linglong/common/dir.h"
 #include "linglong/utils/finally/finally.h"
 #include "linglong/utils/log/log.h"
 #include "wayland-security-context-v1.h"
@@ -115,8 +115,7 @@ WaylandSecurityContextManagerV1::createSecurityContext(
         }
     });
 
-    auto runtimeDir = linglong::common::getAppXDGRuntimeDir(builder.getAppId());
-    auto waylandSocket = runtimeDir / "wayland-socket";
+    auto waylandSocket = builder.getBundlePath() / "wayland-socket";
 
     std::error_code ec;
     std::filesystem::create_directories(waylandSocket.parent_path(), ec);
@@ -223,8 +222,6 @@ WaylandSecurityContextV1::~WaylandSecurityContextV1()
 linglong::utils::error::Result<void>
 WaylandSecurityContextV1::apply(generator::ContainerCfgBuilder &builder) noexcept
 {
-    LINGLONG_TRACE("attach security context");
-
     builder.setAnnotation(generator::ANNOTATION::WAYLAND_SOCKET, socketPath.string());
     builder.bindWaylandSocket(socketPath);
     return LINGLONG_OK;

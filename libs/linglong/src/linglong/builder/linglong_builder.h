@@ -8,14 +8,15 @@
 
 #include "linglong/api/types/v1/BuilderConfig.hpp"
 #include "linglong/api/types/v1/BuilderProject.hpp"
-#include "linglong/oci-cfg-generators/container_cfg_builder.h"
 #include "linglong/repo/ostree_repo.h"
 #include "linglong/runtime/container_builder.h"
 #include "linglong/runtime/run_context.h"
 #include "linglong/utils/error/error.h"
 #include "linglong/utils/overlayfs.h"
 
+#include <filesystem>
 #include <string>
+#include <vector>
 
 namespace linglong::builder {
 
@@ -43,6 +44,10 @@ struct BuilderBuildOptions
     bool isolateNetWork{ false };
 };
 
+utils::error::Result<std::vector<std::filesystem::path>>
+installModule(const std::filesystem::path &buildOutput,
+              const std::filesystem::path &moduleOutput,
+              const std::unordered_set<std::string> &rules);
 utils::error::Result<void> cmdListApp(repo::OSTreeRepo &repo);
 utils::error::Result<void> cmdRemoveApp(repo::OSTreeRepo &repo,
                                         std::vector<std::string> refs,
@@ -55,7 +60,7 @@ public:
     // 主要用于在构建完成后将linglong.yaml复制到应用中
     std::string projectYamlFile;
     explicit Builder(std::optional<api::types::v1::BuilderProject> project,
-                     const QDir &workingDir,
+                     std::filesystem::path workingDir,
                      repo::OSTreeRepo &repo,
                      runtime::ContainerBuilder &containerBuilder,
                      const api::types::v1::BuilderConfig &cfg);
@@ -83,13 +88,20 @@ public:
     static auto importLayer(repo::OSTreeRepo &repo, const QString &path)
       -> utils::error::Result<void>;
 
-    auto run(const QStringList &modules, const QStringList &args, bool debug = false)
-      -> utils::error::Result<void>;
+    auto run(std::vector<std::string> modules,
+             std::vector<std::string> args,
+             bool debug = false,
+             std::vector<std::string> extensions = {}) -> utils::error::Result<void>;
     auto runtimeCheck() -> utils::error::Result<void>;
     auto runFromRepo(const package::Reference &ref, const std::vector<std::string> &args)
       -> utils::error::Result<void>;
 
     void setBuildOptions(const BuilderBuildOptions &options) noexcept { buildOptions = options; }
+
+protected:
+    std::string uabExportFilename(const linglong::package::Reference &ref);
+    std::string layerExportFilename(const linglong::package::Reference &ref,
+                                    const std::string &module);
 
 private:
     auto buildStagePrepare() noexcept -> utils::error::Result<void>;
@@ -105,7 +117,8 @@ private:
     utils::error::Result<void> generateEntries() noexcept;
     utils::error::Result<void> processBuildDepends() noexcept;
     utils::error::Result<void> commitToLocalRepo() noexcept;
-    std::unique_ptr<utils::OverlayFS> makeOverlay(QString lowerdir, QString overlayDir) noexcept;
+    std::unique_ptr<utils::OverlayFS> makeOverlay(const std::filesystem::path &lowerdir,
+                                                  const std::filesystem::path &overlayDir) noexcept;
     void fixLocaltimeInOverlay(std::unique_ptr<utils::OverlayFS> &base);
     utils::error::Result<package::Reference> ensureUtils(const std::string &id) noexcept;
     utils::error::Result<package::Reference> clearDependency(const std::string &ref,
@@ -115,13 +128,17 @@ private:
     auto generateBuildDependsScript() noexcept -> utils::error::Result<bool>;
     auto generateDependsScript() noexcept -> utils::error::Result<bool>;
     void takeTerminalForeground();
-    void mergeOutput(const QList<QDir> &src, const QDir &dest, const QStringList &target);
+    void mergeOutput(const std::vector<std::filesystem::path> &src,
+                     const std::filesystem::path &dest,
+                     const std::vector<std::string> &targets);
     void printBasicInfo();
     void printRepo();
+    bool checkDeprecatedInstallFile();
 
 private:
     repo::OSTreeRepo &repo;
-    QDir workingDir;
+    std::filesystem::path workingDir;
+    std::filesystem::path internalDir;
     std::optional<api::types::v1::BuilderProject> project;
     runtime::ContainerBuilder &containerBuilder;
     api::types::v1::BuilderConfig cfg;
@@ -131,10 +148,10 @@ private:
     int64_t gid;
 
     std::optional<package::Reference> projectRef;
-    QStringList packageModules;
+    std::vector<std::string> packageModules;
     std::unique_ptr<utils::OverlayFS> baseOverlay;
     std::unique_ptr<utils::OverlayFS> runtimeOverlay;
-    QDir buildOutput;
+    std::filesystem::path buildOutput;
     std::string installPrefix;
     runtime::RunContext buildContext;
 

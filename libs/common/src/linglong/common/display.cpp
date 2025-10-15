@@ -6,12 +6,12 @@
 
 #include "linglong/common/xdg.h"
 
-namespace linglong::common {
+namespace linglong::common::display {
 
 tl::expected<std::filesystem::path, std::string>
 getWaylandDisplay(std::string_view display) noexcept
 {
-    auto xdgRuntimeDir = getXDGRuntimeDir();
+    auto xdgRuntimeDir = xdg::getXDGRuntimeDir();
     std::filesystem::path waylandSocketPath;
     if (display[0] == '/') {
         waylandSocketPath = display;
@@ -102,4 +102,4 @@ tl::expected<std::filesystem::path, std::string> getXOrgAuthFile(std::string_vie
     return tl::unexpected{ "XAUTHORITY file not found at " + xAuthFile.string() };
 }
 
-} // namespace linglong::common
+} // namespace linglong::common::display
