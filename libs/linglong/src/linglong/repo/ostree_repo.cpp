@@ -955,9 +955,11 @@ OSTreeRepo::updateConfig(const api::types::v1::RepoConfigV2 &newCfg) noexcept
 utils::error::Result<void> OSTreeRepo::setConfig(const api::types::v1::RepoConfigV2 &cfg) noexcept
 {
     LINGLONG_TRACE("set config");
+    LogD("set config: {}", nlohmann::json(cfg).dump());
 
     utils::Transaction transaction;
 
+    LogI("save config to disk");
     auto result = saveConfig(cfg, this->repoDir.absoluteFilePath("config.yaml"));
     if (!result) {
         return LINGLONG_ERR(result);
@@ -969,6 +971,7 @@ utils::error::Result<void> OSTreeRepo::setConfig(const api::types::v1::RepoConfi
             Q_ASSERT(false);
         }
     });
+    LogI("update ostree repo config");
     result = updateOstreeRepoConfig(this->ostreeRepo.get(), cfg);
     if (!result) {
         return LINGLONG_ERR(result);
@@ -980,7 +983,7 @@ utils::error::Result<void> OSTreeRepo::setConfig(const api::types::v1::RepoConfi
             Q_ASSERT(false);
         }
     });
-
+    LogI("rebuild repo cache");
     if (auto ret = this->cache->rebuildCache(cfg, *(this->ostreeRepo)); !ret) {
         return LINGLONG_ERR(ret);
     }
@@ -1391,7 +1394,6 @@ void OSTreeRepo::pull(service::PackageTask &taskContext,
     }
     LINGLONG_TRACE(std::string{ "pull " + refString + " from " + pullRepo.name }.c_str());
 
-    utils::Transaction transaction;
     auto *cancellable = taskContext.cancellable();
 
     ostreeUserData data{ .taskContext = &taskContext };
@@ -1498,8 +1500,6 @@ void OSTreeRepo::pull(service::PackageTask &taskContext,
         taskContext.reportError(LINGLONG_ERRV(result));
         return;
     }
-
-    transaction.commit();
 }
 
 utils::error::Result<package::Reference>
@@ -1867,6 +1867,7 @@ OSTreeRepo::listRemote(const package::FuzzyReference &fuzzyRef,
         auto *item = (request_register_struct_t *)entry->data;
         pkgInfos.emplace_back(api::types::v1::PackageInfoV2{
           .arch = { item->arch },
+          .base = { item->base },
           .channel = item->channel,
           .description = item->description,
           .id = item->app_id,
