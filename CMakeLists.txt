@@ -69,6 +69,24 @@ set(LINGLONG_ENABLE_WAYLAND_SEC_CTX_SUPPORT
     OFF
     CACHE BOOL "enable linglong wayland security context support")
 
+# harden the build
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -pie -Wl,-z,relro -Wl,-z,now")
+
+add_compile_options(-fstack-protector-strong)
+if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+  message(STATUS "Non-Debug build, enabling FORTIFY_SOURCE")
+  add_compile_definitions(_FORTIFY_SOURCE=2)
+endif()
+
+string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" SYSTEM_PROC_LOWER)
+if(SYSTEM_PROC_LOWER MATCHES "mips")
+    message(STATUS "MIPS architecture detected. Adding -mxgot to C/CXX flags.")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mxgot")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mxgot")
+endif()
+
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 include(PFL)
 
@@ -88,11 +106,12 @@ if(ENABLE_CPM)
   include(CPM)
   CPMFindPackage(
     NAME tl-expected
-    VERSION 1.0.0 # NOTE: Upstream cmake version doesn't match git tag, we need
-                  # https://github.com/TartanLlama/expected/pull/62 in v1.1.0,
+    VERSION 1.2.0 # NOTE: Upstream cmake version doesn't match git tag, we need https://github.com/TartanLlama/expected/pull/62 in v1.1.0,
                   # but cmake version of v1.1.0 is 1.0.0.
+                  # upstream fix this issue in https://github.com/TartanLlama/expected/commit/17d0058a5a5d3e0ea647884f9b29c518dd06f26e
+                  # so we require tl-expected >= 1.2.0
     GITHUB_REPOSITORY TartanLlama/expected
-    GIT_TAG v1.1.0
+    GIT_TAG v1.3.1
     GIT_SHALLOW ON
     OPTIONS "EXPECTED_BUILD_TESTS OFF"
     EXCLUDE_FROM_ALL ON)
@@ -114,7 +133,7 @@ if(ENABLE_CPM)
     NAME CLI11
     VERSION 2.4.1
     GITHUB_REPOSITORY CLIUtils/CLI11
-    GIT_TAG v2.4.1
+    GIT_TAG v2.6.1
     EXCLUDE_FROM_ALL ON
     OPTIONS "CLI11_BUILD_TESTS OFF")
 
@@ -134,17 +153,6 @@ endif()
 
 set(linglong_EXTERNALS "ytj ytj::ytj")
 
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^mips" OR CMAKE_SYSTEM_PROCESSOR MATCHES
-                                             "^MIPS")
-  message(
-    STATUS
-      "MIPS architecture detected. Globally adding -mxgot to CMAKE_CXX_FLAGS.")
-
-  set(CMAKE_CXX_FLAGS
-      "${CMAKE_CXX_FLAGS} -mxgot"
-      CACHE STRING "C++ compiler flags" FORCE)
-endif()
-
 find_package(fmt 5.2.1 QUIET)
 if(NOT fmt_FOUND)
   message(STATUS "system fmt not found, using external fmt")
@@ -155,7 +163,7 @@ if(NOT fmt_FOUND)
 endif()
 
 # NOTE: UOS v20 do not have tl-expected packaged.
-find_package(tl-expected 1.1.0 QUIET)
+find_package(tl-expected 1.2.0 QUIET)
 if(NOT tl-expected_FOUND)
   message(STATUS "tl-expected not found, using external tl-expected")
   # list(APPEND linglong_EXTERNALS tl-expected) # tl-expected requires 3.14
@@ -197,7 +205,8 @@ endif()
 if(LINGLONG_ENABLE_WAYLAND_SEC_CTX_SUPPORT)
   message(STATUS "enable linglong wayland security context support")
   pkg_search_module(WAYLAND_CLIENT REQUIRED IMPORTED_TARGET wayland-client)
-  pkg_search_module(WAYLAND_PROTOCOLS REQUIRED IMPORTED_TARGET wayland-protocols)
+  pkg_search_module(WAYLAND_PROTOCOLS REQUIRED IMPORTED_TARGET
+                    wayland-protocols)
   find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
 endif()
 
@@ -270,6 +279,9 @@ else()
 
   while(true)
     find_package(Qt6 COMPONENTS Core DBus)
+    if(Qt6_FOUND AND Qt6_VERSION VERSION_GREATER_EQUAL "6.10")
+      find_package(Qt6 COMPONENTS DBusPrivate)
+    endif()
     if(Qt6_FOUND)
       set(QT_VERSION_MAJOR "6")
       break()

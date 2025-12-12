@@ -728,24 +728,9 @@ $defs:
         'Queued',
         'Pending',
         'Processing',
-        'PartCompleted',
         'Succeed',
         'Failed',
         'Canceled',
-      ]
-  SubState:
-    description: subState of current task,
-    enum:
-      [
-        'Unknown',
-        'PreAction',
-        'InstallRuntime',
-        'InstallBase',
-        'InstallApplication',
-        'PostAction',
-        'Uninstall',
-        'AllDone',
-        'PackageManagerDone',
       ]
   PackageManager1InstallLayerFDResult:
     $ref: '#/$defs/CommonResult'
@@ -790,20 +775,27 @@ $defs:
     description: package manager uninstall parameters
     required:
       - package
+      - options
     properties:
       package:
         $ref: '#/$defs/PackageManager1Package'
+      options:
+        $ref: '#/$defs/CommonOptions'
   PackageManager1UpdateParameters:
     type: object
     description: package manager update result
     required:
       - packages
+      - depsOnly
     properties:
       packages:
         type: array
         description: packages of package manager update
         items:
           $ref: '#/$defs/PackageManager1Package'
+      depsOnly:
+        type: boolean
+        description: upgrade dependencies only
   PackageManager1ModifyRepoParameters:
     type: object
     required:

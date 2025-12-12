@@ -14,6 +14,8 @@
 #include "linglong/package/reference.h"
 #include "linglong/package_manager/package_task.h"
 #include "linglong/repo/client_factory.h"
+#include "linglong/repo/config.h"
+#include "linglong/repo/remote_packages.h"
 #include "linglong/repo/repo_cache.h"
 #include "linglong/utils/error/error.h"
 
@@ -33,36 +35,25 @@ struct clearReferenceOption
     bool semanticMatching = false; // semantic matching compatible version
 };
 
-struct getRemoteReferenceByPriorityOption
-{
-    bool onlyClearHighestPriority = false; // Only clear the highest-priority repo
-                                           // when the user specifies a repo
-    bool semanticMatching = false;         // semantic matching compatible version
-};
-
 class OSTreeRepo : public QObject
 
 {
     Q_OBJECT
 public:
-    using repoPriority_t = decltype(api::types::v1::Repo::priority);
     OSTreeRepo(const OSTreeRepo &) = delete;
     OSTreeRepo(OSTreeRepo &&) = delete;
     OSTreeRepo &operator=(const OSTreeRepo &) = delete;
     OSTreeRepo &operator=(OSTreeRepo &&) = delete;
-    OSTreeRepo(const QDir &path,
-               api::types::v1::RepoConfigV2 cfg,
-               ClientFactory &clientFactory) noexcept;
+    OSTreeRepo(const QDir &path, api::types::v1::RepoConfigV2 cfg) noexcept;
 
     ~OSTreeRepo() override;
 
     [[nodiscard]] const api::types::v1::RepoConfigV2 &getConfig() const noexcept;
-    [[nodiscard]] api::types::v1::RepoConfigV2 getOrderedConfig() noexcept;
+    [[nodiscard]] api::types::v1::RepoConfigV2 getOrderedConfig() const noexcept;
     [[nodiscard]] utils::error::Result<api::types::v1::Repo>
     getRepoByAlias(const std::string &alias) const noexcept;
-    [[nodiscard]] std::vector<api::types::v1::Repo> getHighestPriorityRepos() noexcept;
-    repoPriority_t promotePriority(const std::string &alias) noexcept;
-    void recoverPriority(const std::string &alias, const repoPriority_t &priority) noexcept;
+    [[nodiscard]] virtual std::vector<std::vector<api::types::v1::Repo>>
+    getPriorityGroupedRepos() const noexcept;
     utils::error::Result<void> setConfig(const api::types::v1::RepoConfigV2 &cfg) noexcept;
 
     utils::error::Result<package::LayerDir>
@@ -82,31 +73,33 @@ public:
                  const std::string &url,
                  const package::Reference &reference,
                  const std::string &module = "binary") const noexcept;
-    void pull(service::PackageTask &taskContext,
-              const package::Reference &reference,
-              const std::string &module = "binary",
-              const std::optional<api::types::v1::Repo> &repo = std::nullopt) noexcept;
+    [[nodiscard]] utils::error::Result<void> pull(service::Task &taskContext,
+                                                  const package::Reference &reference,
+                                                  const std::string &module,
+                                                  const api::types::v1::Repo &repo) noexcept;
 
-    [[nodiscard]] utils::error::Result<package::Reference>
+    [[nodiscard]] virtual utils::error::Result<package::Reference>
     clearReference(const package::FuzzyReference &fuzzy,
                    const clearReferenceOption &opts,
                    const std::string &module = "binary",
                    const std::optional<std::string> &repo = std::nullopt) const noexcept;
-    [[nodiscard]] utils::error::Result<linglong::package::ReferenceWithRepo>
-    getRemoteReferenceByPriority(const package::FuzzyReference &fuzzy,
-                                 const getRemoteReferenceByPriorityOption &opts,
-                                 const std::string &module = "binary") noexcept;
 
-    utils::error::Result<std::vector<api::types::v1::PackageInfoV2>> listLocal() const noexcept;
-    utils::error::Result<std::vector<api::types::v1::PackageInfoV2>>
-    listLocalLatest() const noexcept;
-    utils::error::Result<std::vector<api::types::v1::PackageInfoV2>>
-    listRemote(const package::FuzzyReference &fuzzyRef,
-               const std::optional<api::types::v1::Repo> &repo = std::nullopt) const noexcept;
+    virtual utils::error::Result<std::vector<api::types::v1::PackageInfoV2>>
+    listLocal() const noexcept;
+    utils::error::Result<std::vector<api::types::v1::PackageInfoV2>> virtual searchRemote(
+      std::string searching, const api::types::v1::Repo &repo) const noexcept;
+    utils::error::Result<std::vector<api::types::v1::PackageInfoV2>> virtual searchRemote(
+      const package::FuzzyReference &fuzzyRef,
+      const api::types::v1::Repo &repo,
+      bool semanticMatching = false) const noexcept;
+    utils::error::Result<repo::RemotePackages> virtual matchRemoteByPriority(
+      const package::FuzzyReference &fuzzyRef,
+      const std::optional<api::types::v1::Repo> &repo = std::nullopt) const noexcept;
 
     utils::error::Result<std::vector<api::types::v1::RepositoryCacheLayersItem>>
     listLayerItem() const noexcept;
-    [[nodiscard]] utils::error::Result<std::vector<api::types::v1::RepositoryCacheLayersItem>>
+    [[nodiscard]] virtual utils::error::Result<
+      std::vector<api::types::v1::RepositoryCacheLayersItem>>
     listLocalBy(const linglong::repo::repoCacheQuery &query) const noexcept;
     utils::error::Result<int64_t>
     getLayerCreateTime(const api::types::v1::RepositoryCacheLayersItem &item) const noexcept;
@@ -128,6 +121,7 @@ public:
                 bool deleted,
                 const std::string &module = "binary",
                 const std::optional<std::string> &subRef = std::nullopt) noexcept;
+    bool isMarkedDeleted(const package::Reference &ref, const std::string &module) const noexcept;
 
     // 扫描layers变动，重新合并变动layer的modules
     [[nodiscard]] utils::error::Result<void> mergeModules() const noexcept;
@@ -138,42 +132,46 @@ public:
     // 临时目录由调用者负责删除
     [[nodiscard]] utils::error::Result<package::LayerDir> getMergedModuleDir(
       const package::Reference &ref, const std::vector<std::string> &modules) const noexcept;
-    std::vector<std::string> getModuleList(const package::Reference &ref) noexcept;
-    [[nodiscard]] utils::error::Result<std::vector<std::string>>
-    getRemoteModuleList(const package::Reference &ref,
-                        const std::optional<std::vector<std::string>> &filter,
-                        const api::types::v1::Repo &repo) const noexcept;
-    [[nodiscard]] utils::error::Result<std::pair<api::types::v1::Repo, std::vector<std::string>>>
-    getRemoteModuleListByPriority(
-      const package::Reference &ref,
-      const std::optional<std::vector<std::string>> &filter,
-      bool onlyClearHighestPriority = false,
-      const std::optional<api::types::v1::Repo> &repo = std::nullopt) noexcept;
-    utils::error::Result<package::ReferenceWithRepo>
-    latestRemoteReference(package::FuzzyReference &fuzzyRef) noexcept;
+    virtual std::vector<std::string> getModuleList(const package::Reference &ref) const noexcept;
+    [[nodiscard]] virtual utils::error::Result<std::vector<std::string>> getRemoteModuleList(
+      const package::Reference &ref, const api::types::v1::Repo &repo) const noexcept;
+    virtual utils::error::Result<package::ReferenceWithRepo>
+    latestRemoteReference(const package::FuzzyReference &fuzzyRef) const noexcept;
+    virtual utils::error::Result<package::Reference>
+    latestLocalReference(const package::FuzzyReference &fuzzyRef) const noexcept;
 
-    [[nodiscard]] utils::error::Result<api::types::v1::RepositoryCacheLayersItem>
+    [[nodiscard]] virtual utils::error::Result<api::types::v1::RepositoryCacheLayersItem>
     getLayerItem(const package::Reference &ref,
                  std::string module = "binary",
                  const std::optional<std::string> &subRef = std::nullopt) const noexcept;
     utils::error::Result<void> fixExportAllEntries() noexcept;
+
+    virtual std::unique_ptr<ClientAPIWrapper> createClientV2(const std::string &url) const
+    {
+        return ClientFactory(url).createClientV2();
+    }
+
+    const api::types::v1::Repo &getDefaultRepo() const
+    {
+        return linglong::repo::getDefaultRepo(cfg);
+    }
+
+    virtual utils::error::Result<std::vector<api::types::v1::PackageInfoV2>>
+    listLocalApps() const noexcept;
+    utils::error::Result<std::vector<std::pair<package::Reference, package::ReferenceWithRepo>>>
+    upgradableApps() const noexcept;
 
 private:
     api::types::v1::RepoConfigV2 cfg;
 
     struct OstreeRepoDeleter
     {
-        void operator()(OstreeRepo *repo)
-        {
-            qDebug() << "delete OstreeRepo" << repo;
-            g_clear_object(&repo);
-        }
+        void operator()(OstreeRepo *repo) { g_clear_object(&repo); }
     };
 
     std::unique_ptr<OstreeRepo, OstreeRepoDeleter> ostreeRepo = nullptr;
     QDir repoDir;
     std::unique_ptr<linglong::repo::RepoCache> cache{ nullptr };
-    ClientFactory &m_clientFactory;
 
     utils::error::Result<void> updateConfig(const api::types::v1::RepoConfigV2 &newCfg) noexcept;
     QDir ostreeRepoDir() const noexcept;

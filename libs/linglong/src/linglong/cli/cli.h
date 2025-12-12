@@ -16,6 +16,8 @@
 #include "linglong/repo/ostree_repo.h"
 #include "linglong/runtime/container_builder.h"
 #include "linglong/utils/error/error.h"
+#include "linglong/utils/log/log.h"
+#include "linglong/utils/serialize/json.h"
 
 #include <CLI/CLI.hpp>
 
@@ -25,6 +27,10 @@ class RunContext;
 
 namespace linglong::generator {
 class ContainerCfgBuilder;
+}
+
+namespace linglong::api::types::v1 {
+struct PackageManager1InstallParameters;
 }
 
 namespace linglong::cli {
@@ -77,6 +83,7 @@ struct InstallOptions
 struct UpgradeOptions
 {
     std::string appid; // 可选，为空时升级所有应用
+    bool depsOnly{ false };
 };
 
 struct SearchOptions
@@ -92,6 +99,7 @@ struct UninstallOptions
 {
     std::string appid;
     std::string module;
+    bool forceOpt{ false };
 };
 
 struct ListOptions
@@ -120,14 +128,31 @@ struct RepoOptions
 
 struct InspectOptions
 {
-    std::optional<pid_t> pid;
-};
-
-struct DirOptions
-{
     std::string appid;
     std::string module;
+    std::string dirType{ "layer" };
 };
+
+enum class TaskType : int {
+    None,
+    Install,
+    InstallFromFile,
+    Uninstall,
+    Upgrade,
+};
+
+struct PMTaskState
+{
+    linglong::api::types::v1::State state{ linglong::api::types::v1::State::Unknown };
+    std::string message;
+    double percentage{ 0 };
+    linglong::utils::error::ErrorCode errorCode;
+    TaskType taskType{ TaskType::None };
+    std::variant<api::types::v1::PackageManager1InstallParameters> params;
+};
+
+bool operator!=(const PMTaskState &lhs, const PMTaskState &rhs);
+bool operator==(const PMTaskState &lhs, const PMTaskState &rhs);
 
 class Cli : public QObject
 {
@@ -159,8 +184,7 @@ public:
     int info(const InfoOptions &options);
     int content(const ContentOptions &options);
     int prune();
-    int inspect(const InspectOptions &options);
-    int dir(const DirOptions &options);
+    int inspect(CLI::App *subcommand, const InspectOptions &options);
 
     void cancelCurrentTask();
 
@@ -181,34 +205,62 @@ private:
                                          const std::string &type);
     static void filterPackageInfosByVersion(
       std::map<std::string, std::vector<api::types::v1::PackageInfoV2>> &list) noexcept;
-    void printProgress() noexcept;
     [[nodiscard]] utils::error::Result<std::vector<api::types::v1::CliContainer>>
     getCurrentContainers() const noexcept;
     int installFromFile(const QFileInfo &fileInfo,
                         const api::types::v1::CommonOptions &commonOptions,
                         const std::string &appid);
     int setRepoConfig(const QVariantMap &config);
+    utils::error::Result<void> ensureAuthorized();
     utils::error::Result<void> runningAsRoot();
     utils::error::Result<void> runningAsRoot(const QList<QString> &args);
-    utils::error::Result<std::vector<api::types::v1::UpgradeListResult>>
-    listUpgradable(const std::vector<api::types::v1::PackageInfoV2> &pkgs);
-    utils::error::Result<std::vector<api::types::v1::UpgradeListResult>>
-    listUpgradable(const std::string &type = "app");
+    utils::error::Result<std::vector<api::types::v1::UpgradeListResult>> listUpgradable();
     int generateCache(const package::Reference &ref);
     utils::error::Result<std::filesystem::path> ensureCache(
       runtime::RunContext &runContext, const generator::ContainerCfgBuilder &cfgBuilder) noexcept;
     QDBusReply<QString> authorization();
     void updateAM() noexcept;
+    std::vector<std::string> getRunningAppContainers(const std::string &appid);
+    int getLayerDir(const InspectOptions &options);
+    int getBundleDir(const InspectOptions &options);
+    utils::error::Result<void> initInteraction();
+
+    template <typename T>
+    utils::error::Result<T> waitDBusReply(QDBusPendingReply<QVariantMap> &reply)
+    {
+        LINGLONG_TRACE("waitDBusReply");
+
+        reply.waitForFinished();
+        if (reply.isError()) {
+            return LINGLONG_ERR(reply.error().message(), reply.error().type());
+        }
+
+        auto result = utils::serialize::fromQVariantMap<T>(reply.value());
+        if (!result) {
+            LogF("bug detected: {}", result.error());
+            std::abort();
+        }
+
+        return result;
+    }
+
+    utils::error::Result<void> waitTaskCreated(QDBusPendingReply<QVariantMap> &reply,
+                                               TaskType type);
+    void waitTaskDone();
+
+    void handleTaskState() noexcept;
+    void handleInstallError(const utils::error::Error &error,
+                            const api::types::v1::PackageManager1InstallParameters &params);
+    void handleUninstallError(const utils::error::Error &error);
+    void handleUpgradeError(const utils::error::Error &error);
+    bool handleCommonError(const utils::error::Error &error);
+    void printOnTaskFailed();
+    void printOnTaskSuccess();
 
 private Q_SLOTS:
     // maybe use in the future
     void onTaskAdded(const QDBusObjectPath &object_path);
-    void onTaskRemoved(const QDBusObjectPath &object_path,
-                       int state,
-                       int subState,
-                       const QString &message,
-                       double percentage,
-                       int code);
+    void onTaskRemoved(const QDBusObjectPath &object_path);
     void onTaskPropertiesChanged(const QString &interface,
                                  const QVariantMap &changed_properties,
                                  const QStringList &invalidated_properties);
@@ -228,11 +280,7 @@ private:
     api::dbus::v1::PackageManager &pkgMan;
     QString taskObjectPath;
     api::dbus::v1::Task1 *task{ nullptr };
-    linglong::api::types::v1::State lastState{ linglong::api::types::v1::State::Unknown };
-    linglong::api::types::v1::SubState lastSubState{ linglong::api::types::v1::SubState::Unknown };
-    QString lastMessage;
-    double lastPercentage{ 0 };
-    linglong::utils::error::ErrorCode lastErrorCode;
+    PMTaskState taskState;
     GlobalOptions globalOptions;
 };
 

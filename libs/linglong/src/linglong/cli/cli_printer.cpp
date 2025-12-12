@@ -226,12 +226,6 @@ void CLIPrinter::printContainers(const std::vector<api::types::v1::CliContainer>
     }
 }
 
-void CLIPrinter::printReply(const api::types::v1::CommonResult &reply)
-{
-    std::cout << "code: " << reply.code << std::endl;
-    std::cout << "message:" << std::endl << reply.message << std::endl;
-}
-
 void CLIPrinter::printRepoConfig(const api::types::v1::RepoConfigV2 &repoInfo)
 {
     std::cout << "Default: " << repoInfo.defaultRepo << std::endl;
@@ -284,25 +278,12 @@ void CLIPrinter::printContent(const QStringList &filePaths)
     }
 }
 
-void CLIPrinter::printTaskState(double percentage,
-                                const QString &message,
-                                api::types::v1::State state,
-                                api::types::v1::SubState subState)
+void CLIPrinter::printProgress(double percentage, const std::string &message)
 {
     auto &stdout = std::cout;
-    if (state == api::types::v1::State::Failed) {
-        stdout << "\r\33[K"
-               << "\033[?25l" << message.toStdString() << "\033[?25h";
-    } else {
-        stdout << "\r\33[K"
-               << "\033[?25l" << message.toStdString() << ":" << percentage << "%"
-               << "\033[?25h";
-    }
-    if (state == api::types::v1::State::PartCompleted
-        || subState == api::types::v1::SubState::AllDone
-        || subState == api::types::v1::SubState::PackageManagerDone) {
-        stdout << "\n";
-    }
+    stdout << "\r\33[K"
+           << "\033[?25l" << message << ": " << std::fixed << std::setprecision(2) << percentage
+           << "%" << std::defaultfloat << "\033[?25h";
     stdout.flush();
 }
 
@@ -342,9 +323,14 @@ void CLIPrinter::printInspect(const api::types::v1::InspectResult &result)
               << std::endl;
 }
 
-void CLIPrinter::printMessage(const QString &message)
+void CLIPrinter::printMessage(const std::string &message)
 {
-    std::cout << message.toStdString() << std::endl;
+    std::cout << message << std::endl;
+}
+
+void CLIPrinter::clearLine()
+{
+    std::cout << "\r\33[K";
 }
 
 } // namespace linglong::cli

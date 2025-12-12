@@ -17,6 +17,7 @@
 #include "linglong/package/layer_packager.h"
 #include "linglong/package/reference.h"
 #include "linglong/package/uab_packager.h"
+#include "linglong/repo/config.h"
 #include "linglong/repo/ostree_repo.h"
 #include "linglong/runtime/container.h"
 #include "linglong/utils/command/cmd.h"
@@ -131,10 +132,14 @@ utils::error::Result<void> pullDependency(const package::Reference &ref,
     printReplacedText(
       fmt::format("{:<35}{:<15}{:<15}waiting ...", ref.id, ref.version.toString(), module),
       2);
-    repo.pull(tmpTask, ref, module);
-    if (tmpTask.state() == linglong::api::types::v1::State::Failed) {
-        return LINGLONG_ERR(("pull " + ref.toString() + " failed").data(),
-                            std::move(tmpTask).takeError());
+    QObject::connect(utils::global::GlobalTaskControl::instance(),
+                     &utils::global::GlobalTaskControl::OnCancel,
+                     [&tmpTask]() {
+                         tmpTask.Cancel();
+                     });
+    auto res = repo.pull(tmpTask, ref, module, repo.getDefaultRepo());
+    if (!res) {
+        return LINGLONG_ERR(res);
     }
 
     return LINGLONG_OK;
@@ -260,7 +265,7 @@ utils::error::Result<void> cmdRemoveApp(repo::OSTreeRepo &repo,
                                         bool prune)
 {
     for (const auto &ref : refs) {
-        auto r = package::Reference::parse(QString::fromStdString(ref));
+        auto r = package::Reference::parse(ref);
         if (!r.has_value()) {
             std::cerr << ref << ": " << r.error().message() << std::endl;
             continue;

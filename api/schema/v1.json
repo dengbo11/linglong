@@ -943,24 +943,9 @@
         "Queued",
         "Pending",
         "Processing",
-        "PartCompleted",
         "Succeed",
         "Failed",
         "Canceled"
-      ]
-    },
-    "SubState": {
-      "description": "subState of current task,",
-      "enum": [
-        "Unknown",
-        "PreAction",
-        "InstallRuntime",
-        "InstallBase",
-        "InstallApplication",
-        "PostAction",
-        "Uninstall",
-        "AllDone",
-        "PackageManagerDone"
       ]
     },
     "PackageManager1InstallLayerFDResult": {
@@ -1025,11 +1010,15 @@
       "type": "object",
       "description": "package manager uninstall parameters",
       "required": [
-        "package"
+        "package",
+        "options"
       ],
       "properties": {
         "package": {
           "$ref": "#/$defs/PackageManager1Package"
+        },
+        "options": {
+          "$ref": "#/$defs/CommonOptions"
         }
       }
     },
@@ -1037,7 +1026,8 @@
       "type": "object",
       "description": "package manager update result",
       "required": [
-        "packages"
+        "packages",
+        "depsOnly"
       ],
       "properties": {
         "packages": {
@@ -1046,6 +1036,10 @@
           "items": {
             "$ref": "#/$defs/PackageManager1Package"
           }
+        },
+        "depsOnly": {
+          "type": "boolean",
+          "description": "upgrade dependencies only"
         }
       }
     },
@@ -1479,9 +1473,6 @@
     },
     "State": {
       "$ref": "#/$defs/State"
-    },
-    "SubState": {
-      "$ref": "#/$defs/SubState"
     },
     "PackageManager1InstallLayerFDResult": {
       "$ref": "#/$defs/PackageManager1InstallLayerFDResult"

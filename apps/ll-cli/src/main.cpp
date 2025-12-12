@@ -326,6 +326,9 @@ void addUninstallCommand(CLI::App &commandParser,
     cliUninstall->add_option("--module", uninstallOptions.module, _("Uninstall a specify module"))
       ->type_name("MODULE")
       ->check(validatorString);
+    cliUninstall->add_flag("--force",
+                           uninstallOptions.forceOpt,
+                           _("Force uninstall base or runtime"));
 
     // below options are used for compatibility with old ll-cli
     const auto &pruneDescription = std::string{ _("Remove all unused modules") };
@@ -352,6 +355,9 @@ void addUpgradeCommand(CLI::App &commandParser,
                    _("Specify the application ID. If it not be specified, all "
                      "applications will be upgraded"))
       ->check(validatorString);
+    cliUpgrade->add_flag("--deps-only",
+                         upgradeOptions.depsOnly,
+                         _("Only upgrade dependencies of application"));
 }
 
 // Function to add the search subcommand
@@ -569,42 +575,35 @@ void addInspectCommand(CLI::App &commandParser,
 {
     auto *cliInspect =
       commandParser
-        .add_subcommand("inspect", _("Display the information of installed application"))
+        .add_subcommand("inspect",
+                        _("Display the inspect information of the installed application"))
         ->group(group)
-        ->usage(_("Usage: ll-cli inspect [OPTIONS]"));
-    cliInspect->footer("This subcommand is for internal use only currently");
-    cliInspect->add_option("-p,--pid", inspectOptions.pid, _("Specify the process id"))
-      ->check([](const std::string &input) -> std::string {
-          if (input.empty()) {
-              return _("Input parameter is empty, please input valid parameter instead");
-          }
+        ->usage(_("Usage: ll-cli inspect SUBCOMMAND [OPTIONS]"));
 
-          try {
-              auto pid = std::stoull(input);
-              if (pid <= 0) {
-                  return _("Invalid process id");
-              }
-          } catch (std::exception &e) {
-              return _("Invalid pid format");
-          }
+    cliInspect->require_subcommand(1);
 
-          return {};
-      });
-}
-
-// Function to add the dir subcommand
-void addDirCommand(CLI::App &commandParser, DirOptions &dirOptions, const std::string &group)
-{
-    auto cliLayerDir =
-      commandParser.add_subcommand("dir", "Get the layer directory of app(base or runtime)")
-        ->group(group);
-    cliLayerDir->footer("This subcommand is for internal use only currently");
-    cliLayerDir
-      ->add_option("APP", dirOptions.appid, _("Specify the installed app(base or runtime)"))
+    // 创建 inspect dir 子命令
+    auto *cliInspectDir = cliInspect->add_subcommand(
+      "dir",
+      _("Display the data(bundle) directory of the installed(running) application"));
+    cliInspectDir->usage(_("Usage: ll-cli inspect dir [OPTIONS] APP"));
+    cliInspectDir
+      ->add_option("APP",
+                   inspectOptions.appid,
+                   _("Specify the application ID, and it can also be reference"))
       ->required()
       ->check(validatorString);
-    cliLayerDir->add_option("--module", dirOptions.module, _("Specify a module"))
-      ->type_name("MODULE")
+    cliInspectDir
+      ->add_option("-t, --type",
+                   inspectOptions.dirType,
+                   _("Specify the directory type (layer or bundle),the default is layer"))
+      ->type_name("TYPE")
+      ->capture_default_str()
+      ->check(validatorString);
+    cliInspectDir
+      ->add_option("-m, --module",
+                   inspectOptions.module,
+                   _("Specify the module type (binary or develop). Only works when type is layer"))
       ->check(validatorString);
 }
 
@@ -623,11 +622,6 @@ linglong::utils::error::Result<linglong::repo::OSTreeRepo *> initOSTreeRepo()
         return LINGLONG_ERR("load repo config failed", repoConfig);
     }
 
-    // get default repo
-    auto defaultRepo = linglong::repo::getDefaultRepo(*repoConfig);
-    auto clientFactory = new linglong::repo::ClientFactory(std::move(defaultRepo.url));
-    clientFactory->setParent(QCoreApplication::instance());
-
     // check repo root
     auto repoRoot = QDir(LINGLONG_ROOT);
     if (!repoRoot.exists()) {
@@ -635,7 +629,7 @@ linglong::utils::error::Result<linglong::repo::OSTreeRepo *> initOSTreeRepo()
     }
 
     // create repo
-    auto repo = new linglong::repo::OSTreeRepo(repoRoot, std::move(*repoConfig), *clientFactory);
+    auto repo = new linglong::repo::OSTreeRepo(repoRoot, std::move(*repoConfig));
     repo->setParent(QCoreApplication::instance());
     return repo;
 }
@@ -693,7 +687,6 @@ You can report bugs to the linyaps team under this project: https://github.com/O
     ContentOptions contentOptions{};
     RepoOptions repoOptions{};
     InspectOptions inspectOptions{};
-    DirOptions dirOptions{};
 
     // groups for subcommands
     auto *CliBuildInGroup = _("Managing installed applications and runtimes");
@@ -716,7 +709,6 @@ You can report bugs to the linyaps team under this project: https://github.com/O
     addContentCommand(commandParser, contentOptions, CliBuildInGroup);
     addPruneCommand(commandParser, CliAppManagingGroup);
     addInspectCommand(commandParser, inspectOptions, CliHiddenGroup);
-    addDirCommand(commandParser, dirOptions, CliHiddenGroup);
 
     auto res = transformOldExec(argc, argv);
     CLI11_PARSE(commandParser, std::move(res));
@@ -922,11 +914,9 @@ You can report bugs to the linyaps team under this project: https://github.com/O
     } else if (name == "prune") {
         result = cli->prune();
     } else if (name == "inspect") {
-        result = cli->inspect(inspectOptions);
+        result = cli->inspect(*ret, inspectOptions);
     } else if (name == "repo") {
         result = cli->repo(*ret, repoOptions);
-    } else if (name == "dir") {
-        result = cli->dir(dirOptions);
     } else {
         // if subcommand name is not found, print help
         std::cout << commandParser.help("", CLI::AppFormatMode::All);
@@ -946,7 +936,7 @@ int main(int argc, char **argv)
     QCoreApplication app(argc, argv);
     // application initialize
     applicationInitialize();
-    initLinyapsLogSystem(argv[0]);
+    initLinyapsLogSystem(linglong::utils::log::LogBackend::Journal);
 
     // invoke method
     auto ret = QMetaObject::invokeMethod(
