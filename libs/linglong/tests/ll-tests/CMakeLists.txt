@@ -13,12 +13,13 @@ pfl_add_executable(
   SOURCES
   # find -regex '\./src/.+\.[ch]\(pp\)?' -type f -printf '%P\n'| sort
   src/common/tempdir.h
+  src/linglong/builder/config_test.cpp
   src/linglong/builder/linglong_builder_test.cpp
   src/linglong/builder/source_fetcher_test.cpp
   src/linglong/cli/cli_test.cpp
   src/linglong/common/strings_test.cpp
+  src/linglong/common/socket_test.cpp
   src/linglong/common/xdg_test.cpp
-  src/linglong/mocks/command_mock.h
   src/linglong/mocks/layer_packager_mock.h
   src/linglong/mocks/linglong_builder_mock.h
   src/linglong/mocks/ostree_repo_mock.h
@@ -46,7 +47,7 @@ pfl_add_executable(
   src/linglong/repo/ostree_repo_test.cpp
   src/linglong/runtime/run_context_test.cpp
   src/linglong/utils/bash_command_helper_test.cpp
-  src/linglong/utils/command_test.cpp
+  src/linglong/utils/cmd_test.cpp
   src/linglong/utils/error/error_test.cpp
   src/linglong/utils/file_test.cpp
   src/linglong/utils/filelock_test.cpp
@@ -59,6 +60,7 @@ pfl_add_executable(
   src/linglong/utils/transaction_test.cpp
   src/linglong/utils/xdg/directory_test.cpp
   src/main.cpp
+
 
   # ll-driver-detect tests
   ${PROJECT_SOURCE_DIR}/apps/ll-driver-detect/src/nvidia_driver_detector.cpp
