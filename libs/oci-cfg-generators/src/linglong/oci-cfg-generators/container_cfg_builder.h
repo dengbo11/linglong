@@ -18,6 +18,11 @@
 
 namespace linglong::generator {
 
+struct XdpOption
+{
+    std::filesystem::path docMountPoint;
+};
+
 enum class ANNOTATION {
     APPID,
     BASEDIR,
@@ -94,7 +99,7 @@ public:
     ContainerCfgBuilder &bindDefault() noexcept;
     ContainerCfgBuilder &bindSys() noexcept;
     ContainerCfgBuilder &bindProc() noexcept;
-    ContainerCfgBuilder &bindDev() noexcept;
+    ContainerCfgBuilder &bindDev(bool passthru = false) noexcept;
     ContainerCfgBuilder &
     bindDevNode(std::function<bool(const std::string &)> ifBind = nullptr) noexcept;
     ContainerCfgBuilder &bindCgroup() noexcept;
@@ -133,7 +138,7 @@ public:
 
     ContainerCfgBuilder &enableQuirkVolatile() noexcept;
 
-    ContainerCfgBuilder &disableContainerInfo() noexcept;
+    ContainerCfgBuilder &enableXDP(XdpOption option) noexcept;
 
     ContainerCfgBuilder &
       setExtensionMounts(std::vector<ocppi::runtime::config::types::Mount>) noexcept;
@@ -325,9 +330,10 @@ private:
 
     bool isolateNetWorkEnabled = false;
     bool disableUserNamespaceEnabled = false;
-    bool disableGenerateContainerInfo{ true };
+    std::optional<XdpOption> xdpOption;
     bool applyPatchEnabled = true;
     bool isolateTmp{ false };
+    bool devPassthru{ false };
 
     // display system
     std::optional<std::filesystem::path> waylandSocket;

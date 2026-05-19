@@ -225,27 +225,37 @@ ContainerCfgBuilder &ContainerCfgBuilder::bindProc() noexcept
     return *this;
 }
 
-ContainerCfgBuilder &ContainerCfgBuilder::bindDev() noexcept
+ContainerCfgBuilder &ContainerCfgBuilder::bindDev(bool passthru) noexcept
 {
-    devMount = {
-        Mount{ .destination = "/dev",
-               .options = string_list{ "nosuid", "strictatime", "mode=0755", "size=65536k" },
-               .source = "tmpfs",
-               .type = "tmpfs" },
-        Mount{ .destination = "/dev/pts",
-               .options =
-                 string_list{ "nosuid", "noexec", "newinstance", "ptmxmode=0666", "mode=0620" },
-               .source = "devpts",
-               .type = "devpts" },
-        Mount{ .destination = "/dev/shm",
-               .options = string_list{ "nosuid", "noexec", "nodev", "mode=1777" },
-               .source = "shm",
-               .type = "tmpfs" },
-        Mount{ .destination = "/dev/mqueue",
-               .options = string_list{ "rbind", "nosuid", "noexec", "nodev" },
-               .source = "/dev/mqueue",
-               .type = "bind" },
-    };
+    devPassthru = passthru;
+    if (devPassthru) {
+        devMount = {
+            Mount{ .destination = "/dev",
+                   .options = string_list{ "rbind" },
+                   .source = "/dev",
+                   .type = "bind" },
+        };
+    } else {
+        devMount = {
+            Mount{ .destination = "/dev",
+                   .options = string_list{ "nosuid", "strictatime", "mode=0755", "size=65536k" },
+                   .source = "tmpfs",
+                   .type = "tmpfs" },
+            Mount{ .destination = "/dev/pts",
+                   .options =
+                     string_list{ "nosuid", "noexec", "newinstance", "ptmxmode=0666", "mode=0620" },
+                   .source = "devpts",
+                   .type = "devpts" },
+            Mount{ .destination = "/dev/shm",
+                   .options = string_list{ "nosuid", "noexec", "nodev", "mode=1777" },
+                   .source = "shm",
+                   .type = "tmpfs" },
+            Mount{ .destination = "/dev/mqueue",
+                   .options = string_list{ "rbind", "nosuid", "noexec", "nodev" },
+                   .source = "/dev/mqueue",
+                   .type = "bind" },
+        };
+    }
 
     return *this;
 }
@@ -295,6 +305,8 @@ ContainerCfgBuilder &ContainerCfgBuilder::bindRun() noexcept
                         .source = "tmpfs",
                         .type = "tmpfs" } };
 
+    bindIfExist(*runMount, "/run/udev");
+
     return *this;
 }
 
@@ -334,6 +346,14 @@ utils::error::Result<void> ContainerCfgBuilder::buildXDGRuntime() noexcept
                                   .source = hostXDGRuntimeMountPoint,
                                   .type = "bind" });
     environment["XDG_RUNTIME_DIR"] = *containerXDGRuntimeDir;
+
+    if (xdpOption) {
+        runMount->emplace_back(
+          Mount{ .destination = *containerXDGRuntimeDir / "doc",
+                 .options = string_list{ "bind", "nosuid", "nodev", "relatime" },
+                 .source = xdpOption->docMountPoint / "by-app" / appId,
+                 .type = "bind" });
+    }
 
     return LINGLONG_OK;
 }
@@ -1438,6 +1458,11 @@ utils::error::Result<void> ContainerCfgBuilder::buildEnv() noexcept
         environment["LINGLONG_APPID"] = appId;
     }
 
+    if (xdpOption) {
+        environment.try_emplace("GTK_USE_PORTAL", "1");
+        environment.try_emplace("QT_QPA_PLATFORMTHEME", "xdgdesktopportal");
+    }
+
     auto envShFile = bundlePath / "00env.sh";
     std::ofstream ofs(envShFile);
     if (!ofs.is_open()) {
@@ -1472,9 +1497,9 @@ utils::error::Result<void> ContainerCfgBuilder::buildEnv() noexcept
     return LINGLONG_OK;
 }
 
-ContainerCfgBuilder &ContainerCfgBuilder::disableContainerInfo() noexcept
+ContainerCfgBuilder &ContainerCfgBuilder::enableXDP(XdpOption option) noexcept
 {
-    disableGenerateContainerInfo = true;
+    xdpOption = std::move(option);
     return *this;
 }
 
@@ -1482,7 +1507,7 @@ utils::error::Result<void> ContainerCfgBuilder::buildContainerInfo() noexcept
 {
     LINGLONG_TRACE("build container info");
 
-    if (disableGenerateContainerInfo) {
+    if (!xdpOption) {
         return LINGLONG_OK;
     }
 
@@ -1769,7 +1794,7 @@ utils::error::Result<void> ContainerCfgBuilder::mergeMount() noexcept
         std::move(devMount->begin(), devMount->end(), std::back_inserter(mounts));
     }
 
-    if (devNodeMount) {
+    if (!devPassthru && devNodeMount) {
         std::move(devNodeMount->begin(), devNodeMount->end(), std::back_inserter(mounts));
     }
 
