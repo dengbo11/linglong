@@ -62,7 +62,8 @@ auto getXDPDocumentsMountPoint() noexcept -> utils::error::Result<std::filesyste
         return LINGLONG_ERR("Documents portal mount point reply is empty");
     }
 
-    const auto &value = reply.arguments().constFirst();
+    auto arguments = reply.arguments();
+    const auto &value = arguments.constFirst();
     if (!value.canConvert<QByteArray>()) {
         return LINGLONG_ERR(
           fmt::format("unexpected Documents portal mount point type: {}", value.typeName()));
@@ -306,7 +307,7 @@ auto ContainerBuilder::prepareContainer(runtime::RunContext &context,
     }
 
     PreparedContainer prepared{
-        .runContext = context,
+        .runContext = &context,
         .context = std::move(*containerContext),
         .mode = mode,
     };
@@ -323,11 +324,10 @@ auto ContainerBuilder::prepareContainer(runtime::RunContext &context,
     auto uid = getuid();
     auto gid = getgid();
 
-    prepared.cfgBuilder.setAppId(prepared.runContext.get().getTargetID())
+    prepared.cfgBuilder.setAppId(prepared.runContext->getTargetID())
       .setBundlePath(prepared.context->getBundleDir())
       .addUIdMapping(uid, uid, 1)
       .addGIdMapping(gid, gid, 1)
-      .bindUserGroup()
       .bindDefault()
       .bindCgroup();
 
@@ -353,8 +353,7 @@ auto ContainerBuilder::finalizeContainer(PreparedContainer &prepared) noexcept
     bool useOverlayMode = true;
     bool needGenLdConf = false;
     if (prepared.mode == ContainerMode::Init) {
-        auto &runContext = prepared.runContext.get();
-        const auto &appLayer = runContext.getAppLayer();
+        const auto &appLayer = prepared.runContext->getAppLayer();
         if (!appLayer) {
             return LINGLONG_ERR("app layer not found");
         }
@@ -385,6 +384,7 @@ auto ContainerBuilder::configureBuildContainer(PreparedContainer &prepared,
     LINGLONG_TRACE("configure build container");
 
     prepared.cfgBuilder.setBasePath(options.basePath, false)
+      .bindUserGroup()
       .forwardDefaultEnv()
       .appendEnv("LINYAPS_INIT_SINGLE_MODE", "1")
       .disableUserNamespace()
@@ -407,8 +407,7 @@ auto ContainerBuilder::configureBuildContainer(PreparedContainer &prepared,
         prepared.cfgBuilder.isolateNetWork();
     }
 
-    auto &runContext = prepared.runContext.get();
-    auto res = normalizeContainerRootfs(options.basePath, runContext.getConfig());
+    auto res = normalizeContainerRootfs(options.basePath, prepared.runContext->getConfig());
     if (!res) {
         return LINGLONG_ERR(res);
     }
@@ -460,9 +459,13 @@ auto ContainerBuilder::configureInitContainer(PreparedContainer &prepared) noexc
 {
     LINGLONG_TRACE("configure init container");
 
-    auto &runContext = prepared.runContext.get();
+    auto &runContext = *prepared.runContext;
 
-    prepared.cfgBuilder.bindXDGRuntime().bindHostRoot().bindHostStatics().forwardDefaultEnv();
+    prepared.cfgBuilder.bindUserGroup()
+      .bindXDGRuntime()
+      .bindHostRoot()
+      .bindHostStatics()
+      .forwardDefaultEnv();
 
     if (runContext.getConfig().overlayfs) {
         auto res = prepared.context->setupOverlayFS(runContext, true);
@@ -519,6 +522,7 @@ auto ContainerBuilder::configureRunContainer(PreparedContainer &prepared,
     std::filesystem::path homePath{ homeEnv };
 
     prepared.cfgBuilder.setAnnotation(generator::ANNOTATION::LAST_PID, std::to_string(::getpid()))
+      .bindUserGroup(true)
       .bindXDGRuntime()
       .bindRemovableStorageMounts()
       .bindHostRoot()
@@ -582,7 +586,7 @@ auto ContainerBuilder::configureRunContainer(PreparedContainer &prepared,
     capabilities.insert(capabilities.end(), extraCapabilities.begin(), extraCapabilities.end());
     prepared.cfgBuilder.setCapabilities(std::move(capabilities));
 
-    auto &runContext = prepared.runContext.get();
+    auto &runContext = *prepared.runContext;
     for (const auto &type : options.getSecurityContexts()) {
         auto manager = getSecurityContextManager(type);
         if (!manager) {
