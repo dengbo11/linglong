@@ -1688,6 +1688,8 @@ int Cli::run(const RunOptions &options)
         opts.instance = makeDebugInstanceID();
     }
 
+    detectContainerTools();
+
     auto runContext = std::make_unique<runtime::RunContext>(**repo);
     auto res = runContext->resolve(*curAppRef, opts);
     if (!res) {
@@ -3765,6 +3767,19 @@ bool Cli::handleCommonError(const utils::error::Error &error)
     }
 
     return true;
+}
+
+void Cli::detectContainerTools()
+{
+    QProcess process;
+    process.setProgram(QString(LINGLONG_LIBEXEC_DIR "/ll-ctk-detect"));
+    // 禁用标准输入 (stdin)
+    process.setStandardInputFile("/dev/null");
+    // 禁用标准输出 (stdout)
+    process.setStandardOutputFile("/dev/null");
+    // 禁用标准错误输出 (stderr)
+    process.setStandardErrorFile("/dev/null");
+    process.startDetached();
 }
 
 } // namespace linglong::cli

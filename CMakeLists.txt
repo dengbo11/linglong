@@ -483,7 +483,8 @@ pfl_add_libraries(
   ll-builder
   ll-cli
   ll-package-manager
-  llpkg)
+  llpkg
+  ll-ctk-detect)
 
 if(ENABLE_LINGLONG_APP_BUILDER_UTILS)
   add_subdirectory(apps/ll-builder-utils)

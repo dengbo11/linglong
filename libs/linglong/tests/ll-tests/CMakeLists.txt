@@ -85,6 +85,21 @@ pfl_add_executable(
   src/ocppi/cli/common_cli_test.cpp
 
 
+  # ll-ctk-detect tests
+  ${PROJECT_SOURCE_DIR}/apps/ll-ctk-detect/src/container_tool_config.cpp
+  ${PROJECT_SOURCE_DIR}/apps/ll-ctk-detect/src/container_tool_detector.cpp
+  ${PROJECT_SOURCE_DIR}/apps/ll-ctk-detect/src/dbus_notifier.cpp
+  ${PROJECT_SOURCE_DIR}/apps/ll-ctk-detect/src/application_singleton.cpp
+  ${PROJECT_SOURCE_DIR}/apps/ll-ctk-detect/src/deb_installer.cpp
+  ${PROJECT_SOURCE_DIR}/apps/ll-ctk-detect/src/device_detector_registry.cpp
+  ${PROJECT_SOURCE_DIR}/apps/ll-ctk-detect/src/nvidia_device_detector.cpp
+  src/apps/ll-ctk-detect/container_tool_config_test.cpp
+  src/apps/ll-ctk-detect/container_tool_detector_test.cpp
+  src/apps/ll-ctk-detect/device_detector_registry_test.cpp
+  src/apps/ll-ctk-detect/nvidia_device_detector_test.cpp
+  src/apps/ll-ctk-detect/application_singleton_test.cpp
+  src/apps/ll-ctk-detect/deb_installer_test.cpp
+  src/apps/ll-ctk-detect/dbus_notifier_test.cpp
   COMPILE_FEATURES
   PUBLIC
   cxx_std_17
@@ -103,3 +118,5 @@ gtest_discover_tests(${tests} WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 # FIXME: we should'n include header directly
 target_include_directories(${tests}
                            PUBLIC ${PROJECT_SOURCE_DIR}/apps/uab/header/src)
+target_include_directories(${tests}
+                           PUBLIC ${PROJECT_SOURCE_DIR}/apps/ll-ctk-detect/src)
