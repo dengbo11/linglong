@@ -1688,19 +1688,6 @@ int Cli::run(const RunOptions &options)
         opts.instance = makeDebugInstanceID();
     }
 
-    bool nvidiaCdiFound = false;
-    if (opts.cdiDevices) {
-        nvidiaCdiFound = std::any_of(opts.cdiDevices->begin(),
-                                     opts.cdiDevices->end(),
-                                     [](const api::types::v1::CdiDeviceEntry &device) {
-                                         return device.kind == "nvidia.com/gpu";
-                                     });
-    }
-
-    if (!nvidiaCdiFound) {
-        detectDrivers();
-    }
-
     auto runContext = std::make_unique<runtime::RunContext>(**repo);
     auto res = runContext->resolve(*curAppRef, opts);
     if (!res) {
@@ -3778,19 +3765,6 @@ bool Cli::handleCommonError(const utils::error::Error &error)
     }
 
     return true;
-}
-
-void Cli::detectDrivers()
-{
-    QProcess process;
-    process.setProgram(QString(LINGLONG_LIBEXEC_DIR "/ll-driver-detect"));
-    // 禁用标准输入 (stdin)
-    process.setStandardInputFile("/dev/null");
-    // 禁用标准输出 (stdout)
-    process.setStandardOutputFile("/dev/null");
-    // 禁用标准错误输出 (stderr)
-    process.setStandardErrorFile("/dev/null");
-    process.startDetached();
 }
 
 } // namespace linglong::cli

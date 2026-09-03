@@ -483,8 +483,7 @@ pfl_add_libraries(
   ll-builder
   ll-cli
   ll-package-manager
-  llpkg
-  ll-driver-detect)
+  llpkg)
 
 if(ENABLE_LINGLONG_APP_BUILDER_UTILS)
   add_subdirectory(apps/ll-builder-utils)
